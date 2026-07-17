@@ -1,7 +1,8 @@
-import { requireSupabase } from './supabaseClient';
+import { requireSupabase, setAuthToken } from './supabaseClient';
+import { decodeJwt, isExpired, type RoleLoginClaims } from './jwt';
 
 export interface AuthProfile {
-  authUserId: string;
+  loginId: string;
   name: string;
   roleCode: string;
   roleName: string;
@@ -9,16 +10,6 @@ export interface AuthProfile {
   homePath: string;
   initials: string;
 }
-
-// Convenience only — lets people type a friendly name instead of an email.
-// Contains no secrets: passwords are verified by Supabase Auth, not here.
-const USERNAME_TO_EMAIL: Record<string, string> = {
-  admin: 'admin@newsurya.local',
-  branch: 'branch@newsurya.local',
-  kitchen: 'kitchen@newsurya.local',
-  'branch incharge': 'branch-incharge@newsurya.local',
-  stock: 'stock@newsurya.local'
-};
 
 const DASHBOARD_PATHS: Record<string, string> = {
   admin: '/admin',
@@ -28,64 +19,65 @@ const DASHBOARD_PATHS: Record<string, string> = {
   'stock-audit': '/stock-audit'
 };
 
-function resolveEmail(username: string) {
-  const trimmed = username.trim();
-  if (trimmed.includes('@')) return trimmed;
-  return USERNAME_TO_EMAIL[trimmed.toLowerCase()] ?? trimmed;
-}
+const TOKEN_KEY = 'newsurya.token';
 
 function initialsFor(name: string) {
   return name.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]?.toUpperCase()).join('') || '??';
 }
 
-export async function signInWithUsername(username: string, password: string): Promise<AuthProfile> {
-  const supabase = requireSupabase();
-  const email = resolveEmail(username);
-
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) throw new Error('Username or password is incorrect.');
-
-  const profile = await fetchCurrentProfile();
-  if (!profile) {
-    await supabase.auth.signOut();
-    throw new Error('This account has no workspace access configured. Contact your admin.');
-  }
-  return profile;
-}
-
-export async function fetchCurrentProfile(): Promise<AuthProfile | null> {
-  const supabase = requireSupabase();
-  const { data: userData } = await supabase.auth.getUser();
-  const user = userData?.user;
-  if (!user) return null;
-
-  const { data, error } = await supabase
-    .from('app_users')
-    .select('name, active, role:roles(code, name, dashboards)')
-    .eq('auth_user_id', user.id)
-    .maybeSingle();
-
-  if (error || !data || !data.active || !data.role) return null;
-  const role = Array.isArray(data.role) ? data.role[0] : data.role;
-  if (!role) return null;
-
-  const dashboards: string[] = role.dashboards ?? [];
-  const homePath = DASHBOARD_PATHS[dashboards[0]] ?? '/login';
-
+function profileFromClaims(claims: RoleLoginClaims): AuthProfile {
   return {
-    authUserId: user.id,
-    name: data.name,
-    roleCode: role.code,
-    roleName: role.name,
-    dashboards,
-    homePath,
-    initials: initialsFor(data.name)
+    loginId: claims.sub,
+    name: claims.display_name,
+    roleCode: claims.role_code,
+    roleName: claims.role_name,
+    dashboards: claims.dashboards ?? [],
+    homePath: DASHBOARD_PATHS[claims.dashboards?.[0]] ?? '/login',
+    initials: initialsFor(claims.display_name)
   };
 }
 
-export async function signOut() {
+export async function signInWithUsername(username: string, password: string): Promise<AuthProfile> {
   const supabase = requireSupabase();
-  await supabase.auth.signOut();
+  const { data, error } = await supabase.functions.invoke('role-login', { body: { username, password } });
+
+  if (error || !data?.ok) {
+    throw new Error(data?.error ?? 'Username or password is incorrect.');
+  }
+
+  sessionStorage.setItem(TOKEN_KEY, data.access_token as string);
+  setAuthToken(data.access_token as string);
+
+  return {
+    loginId: '',
+    name: data.display_name,
+    roleCode: data.role_code,
+    roleName: data.role_name,
+    dashboards: data.dashboards ?? [],
+    homePath: DASHBOARD_PATHS[(data.dashboards ?? [])[0]] ?? '/login',
+    initials: initialsFor(data.display_name)
+  };
+}
+
+/** Restores a profile from the locally stored session token, without any network call. */
+export function restoreProfile(): AuthProfile | null {
+  const token = sessionStorage.getItem(TOKEN_KEY);
+  if (!token) return null;
+
+  const claims = decodeJwt(token);
+  if (!claims || isExpired(claims)) {
+    sessionStorage.removeItem(TOKEN_KEY);
+    setAuthToken(null);
+    return null;
+  }
+
+  setAuthToken(token);
+  return profileFromClaims(claims);
+}
+
+export function signOut() {
+  sessionStorage.removeItem(TOKEN_KEY);
+  setAuthToken(null);
 }
 
 export function dashboardPath(dashboard: string) {
