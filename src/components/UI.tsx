@@ -1,5 +1,5 @@
 import React from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { NavLink, useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
   Bell,
@@ -11,6 +11,7 @@ import {
   Download,
   Keyboard,
   LayoutDashboard,
+  LogOut,
   Menu,
   Search,
   ShieldCheck,
@@ -21,6 +22,7 @@ import {
   type LucideIcon
 } from 'lucide-react';
 import type { DebugEvent, ModuleStatus, Tone } from '../lib/types';
+import { useAuth } from '../state/AuthContext';
 
 const badgeTone: Record<Tone, string> = {
   orange: 'border-orange-200 bg-orange-50 text-orange-700',
@@ -202,27 +204,29 @@ export function ShortcutGrid() {
   </div>)}</div>;
 }
 
-const navigation = [
-  { to: '/', label: 'Admin', icon: LayoutDashboard, hint: 'Company command centre' },
-  { to: '/kitchen', label: 'Kitchen', icon: ChefHat, hint: 'Store, bake and packing' },
-  { to: '/branch', label: 'Branch', icon: Store, hint: 'Billing and customer orders' },
-  { to: '/branch-incharge', label: 'Branch Incharge', icon: UserCog, hint: 'Outlet people and controls' },
-  { to: '/stock-audit', label: 'Stock Audit', icon: ClipboardCheck, hint: 'Count, verify and reconcile' }
-];
+const navByRole: Record<string, { to: string; label: string; icon: LucideIcon; hint: string; name: string; initials: string }> = {
+  admin: { to: '/admin', label: 'Admin', icon: LayoutDashboard, hint: 'Company command centre', name: 'Owner / Super Admin', initials: 'OA' },
+  kitchen: { to: '/kitchen', label: 'Kitchen', icon: ChefHat, hint: 'Store, bake and packing', name: 'Kitchen Manager', initials: 'KM' },
+  branch: { to: '/branch', label: 'Branch', icon: Store, hint: 'Billing and customer orders', name: 'Branch Cashier', initials: 'BC' },
+  'branch-incharge': { to: '/branch-incharge', label: 'Branch Incharge', icon: UserCog, hint: 'Outlet people and controls', name: 'Branch Incharge', initials: 'BI' },
+  'stock-audit': { to: '/stock-audit', label: 'Stock Audit', icon: ClipboardCheck, hint: 'Count, verify and reconcile', name: 'Stock Auditor', initials: 'SA' }
+};
 
 export function Shell({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
   const [mobileMenu, setMobileMenu] = React.useState(false);
-  const location = useLocation();
-  const activeNav = navigation.find(item => item.to === location.pathname) ?? navigation[0];
-  const sessionRole = location.pathname.startsWith('/branch-incharge') || location.pathname.startsWith('/branch-control')
-    ? { name:'Branch Incharge', initials:'BI' }
-    : location.pathname.startsWith('/stock-audit')
-      ? { name:'Stock Auditor', initials:'SA' }
-    : location.pathname.startsWith('/branch')
-      ? { name:'Branch Cashier', initials:'BC' }
-      : location.pathname.startsWith('/kitchen')
-        ? { name:'Kitchen Manager', initials:'KM' }
-        : { name:'Owner / Super Admin', initials:'OA' };
+  const navigate = useNavigate();
+  const { profile, signOut } = useAuth();
+  const dashboardId = profile?.dashboards[0] ?? 'admin';
+  const activeNav = navByRole[dashboardId] || navByRole.admin;
+  const Icon = activeNav.icon;
+  const displayName = profile?.name ?? activeNav.name;
+  const initials = profile?.initials ?? activeNav.initials;
+
+  async function handleLogout() {
+    await signOut();
+    navigate('/login', { replace: true });
+  }
+
   return <div className="min-h-screen bg-[#f3f5f6] text-slate-950">
     {mobileMenu && <button aria-label="Close navigation" className="fixed inset-0 z-40 bg-slate-950/40 lg:hidden" onClick={() => setMobileMenu(false)} />}
     <aside className={`no-print fixed inset-y-0 left-0 z-50 flex w-[272px] flex-col border-r border-[#2e2923] bg-[#171a1d] text-white transition-transform lg:translate-x-0 ${mobileMenu ? 'translate-x-0' : '-translate-x-full'}`}>
@@ -231,20 +235,22 @@ export function Shell({ title, subtitle, children }: { title: string; subtitle: 
         <button aria-label="Close navigation" className="ml-auto grid size-9 place-items-center rounded-md text-slate-300 hover:bg-white/10 lg:hidden" onClick={() => setMobileMenu(false)}><X className="size-5" /></button>
       </div>
       <div className="px-3 py-5">
-        <p className="px-3 text-[10px] font-bold text-slate-500">ROLE WORKSPACES</p>
-        <nav className="mt-2 space-y-1">{navigation.map(item => {
-          const Icon = item.icon;
-          return <NavLink key={item.to} end={item.to === '/'} to={item.to} onClick={() => setMobileMenu(false)} className={({ isActive }) => `group flex min-h-[56px] items-center gap-3 rounded-lg border px-3 py-2.5 transition ${isActive ? 'border-[#c18a31]/40 bg-[#c18a31]/15 text-[#f3cf8e] shadow-sm' : 'border-transparent text-slate-300 hover:border-white/10 hover:bg-white/5 hover:text-white'}`}>
+        <p className="px-3 text-[10px] font-bold text-slate-500">YOUR WORKSPACE</p>
+        <nav className="mt-2 space-y-1">
+          <NavLink to={activeNav.to} onClick={() => setMobileMenu(false)} className="group flex min-h-[56px] items-center gap-3 rounded-lg border border-[#c18a31]/40 bg-[#c18a31]/15 px-3 py-2.5 text-[#f3cf8e] shadow-sm transition">
             <Icon className="size-5 shrink-0" />
-            <span className="min-w-0"><span className="block text-sm font-semibold">{item.label}</span><span className="block text-[11px] opacity-55">{item.hint}</span></span>
-          </NavLink>;
-        })}</nav>
+            <span className="min-w-0"><span className="block text-sm font-semibold">{activeNav.label}</span><span className="block text-[11px] opacity-55">{activeNav.hint}</span></span>
+          </NavLink>
+        </nav>
       </div>
-      <div className="mt-auto p-4">
+      <div className="mt-auto space-y-3 p-4">
         <div className="rounded-lg border border-white/10 bg-white/5 p-3">
           <div className="flex items-center gap-2 text-xs font-semibold text-slate-300"><Wifi className="size-4 text-emerald-400" />Operations connected</div>
           <p className="mt-1 text-[11px] leading-4 text-slate-500">New Surya Sweets · Since 1995</p>
         </div>
+        <button onClick={handleLogout} className="flex w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5 text-xs font-bold text-slate-300 transition hover:border-rose-500/30 hover:bg-rose-500/10 hover:text-rose-300">
+          <LogOut className="size-4" /> Sign out
+        </button>
       </div>
     </aside>
 
@@ -258,9 +264,10 @@ export function Shell({ title, subtitle, children }: { title: string; subtitle: 
         <div className="ml-auto flex items-center gap-2">
           <button title="Notifications" className="relative grid size-10 place-items-center rounded-md border border-slate-200 text-slate-600 hover:bg-slate-50"><Bell className="size-4" /><span className="absolute right-2 top-2 size-1.5 rounded-full bg-rose-500" /></button>
           <div className="hidden items-center gap-2 rounded-md border border-slate-200 bg-slate-50 py-1.5 pl-2 pr-3 sm:flex">
-            <div className="grid size-7 place-items-center rounded-md bg-slate-900 text-xs font-bold text-white">{sessionRole.initials}</div>
-            <div><p className="text-xs font-bold leading-4 text-slate-800">{sessionRole.name}</p><p className="text-[10px] text-slate-400">Secure session</p></div>
+            <div className="grid size-7 place-items-center rounded-md bg-slate-900 text-xs font-bold text-white">{initials}</div>
+            <div><p className="text-xs font-bold leading-4 text-slate-800">{displayName}</p><p className="text-[10px] text-slate-400">Secure session</p></div>
           </div>
+          <button title="Sign out" onClick={handleLogout} className="hidden size-10 place-items-center rounded-md border border-slate-200 text-slate-500 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600 sm:grid"><LogOut className="size-4" /></button>
         </div>
       </header>
 
