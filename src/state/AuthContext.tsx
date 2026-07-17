@@ -1,13 +1,11 @@
 import React from 'react';
-import { supabase } from '../lib/supabaseClient';
-import { fetchCurrentProfile, signInWithUsername, signOut as authSignOut, type AuthProfile } from '../lib/auth';
+import { restoreProfile, signInWithUsername, signOut as authSignOut, type AuthProfile } from '../lib/auth';
 
 interface AuthContextValue {
   status: 'loading' | 'authed' | 'anon';
   profile: AuthProfile | null;
   signIn: (username: string, password: string) => Promise<AuthProfile>;
-  signOut: () => Promise<void>;
-  refresh: () => Promise<void>;
+  signOut: () => void;
 }
 
 const AuthContext = React.createContext<AuthContextValue | null>(null);
@@ -16,18 +14,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = React.useState<'loading' | 'authed' | 'anon'>('loading');
   const [profile, setProfile] = React.useState<AuthProfile | null>(null);
 
-  const refresh = React.useCallback(async () => {
-    const current = await fetchCurrentProfile();
-    setProfile(current);
-    setStatus(current ? 'authed' : 'anon');
-  }, []);
-
   React.useEffect(() => {
-    if (!supabase) { setStatus('anon'); return; }
-    refresh();
-    const { data: subscription } = supabase.auth.onAuthStateChange(() => { refresh(); });
-    return () => subscription.subscription.unsubscribe();
-  }, [refresh]);
+    const restored = restoreProfile();
+    setProfile(restored);
+    setStatus(restored ? 'authed' : 'anon');
+  }, []);
 
   const signIn = React.useCallback(async (username: string, password: string) => {
     const result = await signInWithUsername(username, password);
@@ -36,13 +27,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return result;
   }, []);
 
-  const signOut = React.useCallback(async () => {
-    await authSignOut();
+  const signOut = React.useCallback(() => {
+    authSignOut();
     setProfile(null);
     setStatus('anon');
   }, []);
 
-  return <AuthContext.Provider value={{ status, profile, signIn, signOut, refresh }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ status, profile, signIn, signOut }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {
