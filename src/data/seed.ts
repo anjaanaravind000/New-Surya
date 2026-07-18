@@ -60,59 +60,29 @@ export const roles: Role[] = [
   { id:'auditor', name:'Stock Auditor', description:'Physical counts, inward verification, variance evidence and audit history', dashboards:['stock-audit'], permissions:{} as any, branchIds:branches.map(b => b.id) }
 ].map(role => role.id === 'owner' ? { ...role, permissions: Object.fromEntries(['owner-command','users-permissions','items-menu','branch-pricebook','recipes-bom','purchase-grn','inventory-ledger','stock-audit','production-approval','packing-dispatch','crm-loyalty','finance-gst','attendance-payroll','reports-bi','integrations','debug-centre','kitchen-planner','kitchen-kds','qc-waste','label-print','goods-receipt','counter-session','fast-billing','online-orders','advance-orders','credit-ledger','returns-refunds','daily-closure','offline-sync','hardware-devices'].map(key => [key, allActions])) as any } : role.id === 'branch-incharge' ? { ...role, permissions: { 'counter-session':['view','create','edit','close'], 'fast-billing':['view','create','print','refund','void','override'], 'online-orders':['view','create','edit','print','override'], 'advance-orders':['view','create','edit','print','override'], 'credit-ledger':['view','create','edit','export'], 'goods-receipt':['view','create','edit','approve'], 'inventory-ledger':['view','export'], 'stock-audit':['view','create','edit','approve'], 'returns-refunds':['view','create','approve','refund','void'], 'daily-closure':['view','create','approve','export','close'], 'attendance-payroll':['view','create','edit'], 'reports-bi':['view','export'], 'offline-sync':['view','sync'], 'hardware-devices':['view','edit'], 'debug-centre':['view'] } as any } : role.id === 'branch-cashier' ? { ...role, permissions: { 'counter-session':['view','create','close'], 'fast-billing':['view','create','print'], 'online-orders':['view','create','print'], 'advance-orders':['view','create','edit','print'], 'credit-ledger':['view','create'], 'daily-closure':['view','create','close'], 'debug-centre':['view'] } as any } : role.id === 'kitchen-manager' ? { ...role, permissions: { 'kitchen-planner':['view','create','edit'], 'kitchen-kds':['view','edit'], 'qc-waste':['view','create','edit'], 'label-print':['view','print'], 'packing-dispatch':['view','create','edit','print'], 'inventory-ledger':['view'], 'debug-centre':['view'] } as any } : { ...role, permissions: Object.fromEntries(['owner-command','users-permissions','items-menu','branch-pricebook','recipes-bom','purchase-grn','inventory-ledger','stock-audit','production-approval','packing-dispatch','crm-loyalty','finance-gst','attendance-payroll','reports-bi','integrations','debug-centre'].map(key => [key, viewCreateEdit])) as any });
 
-export const users: AppUser[] = [
-  { id:'user-owner', name:'Owner', phone:'+91 90000 00000', email:'owner@bakeryos.local', roleId:'owner', branchIds:branches.map(b => b.id), active:true, pinRequired:true, lastLogin:nowIso() },
-  { id:'user-admin', name:'Admin Manager', phone:'+91 90000 00002', email:'admin@bakeryos.local', roleId:'admin-manager', branchIds:branches.map(b => b.id), active:true, pinRequired:true, lastLogin:addHours(-1.5) },
-  { id:'user-kitchen', name:'Kitchen Lead', phone:'+91 90000 00003', email:'kitchen@bakeryos.local', roleId:'kitchen-manager', branchIds:['central-kitchen'], active:true, pinRequired:true, lastLogin:addHours(-0.5) },
-  { id:'user-branch-incharge', name:'Marathahalli Incharge', phone:'+91 90000 00005', email:'incharge@bakeryos.local', roleId:'branch-incharge', branchIds:['marathahalli'], active:true, pinRequired:true, lastLogin:addHours(-0.25) },
-  { id:'user-cashier', name:'Branch Cashier', phone:'+91 90000 00004', email:'cashier@bakeryos.local', roleId:'branch-cashier', branchIds:['marathahalli'], active:true, pinRequired:true, lastLogin:addHours(-0.1) },
-  { id:'user-auditor', name:'Stock Audit Lead', phone:'+91 90000 00006', email:'audit@bakeryos.local', roleId:'auditor', branchIds:['marathahalli','sarjapur-road','kadubeesanahalli','koramangala'], active:true, pinRequired:true, lastLogin:addHours(-3) }
-];
+export const users: AppUser[] = [];
 
-export const productionPlans: ProductionPlan[] = [
-  { id:'plan-001', productId:'prod-mysore-pak', requestedQty:32, plannedDate:today(), branchDemand:{'marathahalli':10,'sarjapur-road':8,'kadubeesanahalli':8,'koramangala':6}, status:'pending-admin-approval', requestedBy:'Kitchen Lead', notes:'Morning stock and online demand replenishment' },
-  { id:'plan-002', productId:'prod-garlic-nipattu', requestedQty:600, plannedDate:today(), branchDemand:{'marathahalli':180,'sarjapur-road':150,'kadubeesanahalli':150,'koramangala':120}, status:'approved', requestedBy:'Kitchen Lead', approvedBy:'Owner', notes:'Evening snacks production' },
-  { id:'plan-003', productId:'prod-chocolate-cake', requestedQty:20, plannedDate:today(), branchDemand:{'marathahalli':6,'sarjapur-road':6,'kadubeesanahalli':4,'koramangala':4}, status:'baking', requestedBy:'Kitchen Lead', approvedBy:'Admin Manager', notes:'Advance cakes + aggregator demand', startedAt:addHours(-1.25), qualityStatus:'pending' }
-];
+export const productionPlans: ProductionPlan[] = [];
 
-export const finishedStocks: FinishedStock[] = [
-  ...posMenuFinishedStocks,
-  { id:'fs-005', productId:'prod-chocolate-cake', branchId:'koramangala', qty:7, batchNo:'CK-0706-A', producedAt:addHours(-4), expiryAt:addHours(30), costPerUnit:520 },
-  { id:'fs-006', productId:'prod-mixture', branchId:'central-kitchen', qty:240, batchNo:'MX-0706-A', producedAt:addHours(-10), expiryAt:addHours(220), costPerUnit:210 }
-];
+export const finishedStocks: FinishedStock[] = [...posMenuFinishedStocks];
 
-export const dispatches: Dispatch[] = [
-  { id:'disp-001', fromBranchId:'central-kitchen', toBranchId:'marathahalli', status:'dispatched', crateIds:['CR-1001','CR-1002'], route:'East Route 1', driver:'Ramesh', vehicleNo:'KA-01-AB-2244', lines:[{productId:'prod-mixture', qty:30, batchNo:'MX-0706-A'},{productId:'prod-garlic-nipattu', qty:60, batchNo:'NP-0706-B'}], createdAt:addHours(-2), notes:'Morning dispatch' }
-];
+export const dispatches: Dispatch[] = [];
 
 export const counterSessions = [];
 export const bills = [];
 export const refunds = [];
 
 export const customers: Customer[] = [
-  { id:'cust-001', name:'Walk-in Customer', phone:'', type:'retail', creditLimit:0, loyaltyPoints:0, favoriteProducts:[] },
-  { id:'cust-002', name:'Corporate Pantry Account', phone:'+91 90000 20002', type:'corporate', creditLimit:25000, loyaltyPoints:240, favoriteProducts:['prod-mysore-pak','prod-mixture'] },
-  { id:'cust-003', name:'Event Bulk Customer', phone:'+91 90000 20003', type:'event', creditLimit:15000, loyaltyPoints:180, favoriteProducts:['prod-chocolate-cake'] }
+  { id:'cust-001', name:'Walk-in Customer', phone:'', type:'retail', creditLimit:0, loyaltyPoints:0, favoriteProducts:[] }
 ];
 
-export const creditEntries = [
-  { id:'cred-001', customerId:'cust-002', debit:7200, credit:2000, dueDate:addHours(24*5).slice(0,10), note:'Corporate sweets supply', at:addHours(-12) }
-];
+export const creditEntries: never[] = [];
 
-export const onlineOrders: OnlineOrder[] = [
-  { id:'ord-001', platform:'Swiggy', branchId:'kadubeesanahalli', externalRef:'SWG-72461', customerName:'Online Customer', items:[{productId:'prod-mysore-pak', qty:0.5, price:820, discountPct:0}], amount:410, status:'new', commissionPct:24, payoutExpected:311.6, receivedAt:addHours(-0.2) },
-  { id:'ord-002', platform:'Zomato', branchId:'marathahalli', externalRef:'ZOM-88201', customerName:'Zomato Customer', items:[{productId:'prod-kachori', qty:6, price:35, discountPct:0}], amount:210, status:'accepted', commissionPct:22, payoutExpected:163.8, receivedAt:addHours(-0.6) },
-  { id:'ord-003', platform:'Website', branchId:'sarjapur-road', externalRef:'WEB-55120', customerName:'Ravi', customerPhone:'+91 90000 45555', items:[{productId:'prod-rose-kaju', qty:1, price:1260, discountPct:5}], amount:1197, status:'new', commissionPct:0, payoutExpected:1197, receivedAt:addHours(-0.1) }
-];
+export const onlineOrders: OnlineOrder[] = [];
 
-export const advanceOrders: AdvanceOrder[] = [
-  { id:'adv-001', branchId:'marathahalli', customerId:'cust-003', productId:'prod-chocolate-cake', qty:2, deliveryAt:addHours(26), designNotes:'Blue theme, eggless, Happy Birthday Aarav', imageRequired:true, advancePaid:800, balance:1160, status:'confirmed' }
-];
+export const advanceOrders: AdvanceOrder[] = [];
 
-export const attendance: AttendanceRecord[] = [
-  { id:'att-001', userId:'user-kitchen', date:today(), shift:'Morning', checkIn:'07:04', status:'present', advanceTaken:1000, advanceDate:today(), advanceReason:'Family emergency', overtimeHours:1.5 },
-  { id:'att-002', userId:'user-cashier', date:today(), shift:'Retail', checkIn:'08:12', status:'late', overtimeHours:0 }
-];
+export const attendance: AttendanceRecord[] = [];
 
 export const integrations: Integration[] = [
   { id:'swiggy', name:'Swiggy Order Webhook', category:'aggregator', status:'missing-credentials', health:'warning', notes:'Adapter, queue, accept/reject and reconciliation model included. Needs official partner credentials.' },
@@ -127,17 +97,8 @@ export const integrations: Integration[] = [
   { id:'website', name:'Website / QR Ordering', category:'ecommerce', status:'sandbox', health:'ok', notes:'Order queue model included for website and table/QR orders.' }
 ];
 
-export const debugEvents: DebugEvent[] = [
-  { id:'dbg-001', at:nowIso(), level:'success', module:'System', message:'BakeryOS Pro booted with local demo persistence', detail:'Add Supabase credentials to switch from demo state to cloud repositories.' },
-  { id:'dbg-002', at:nowIso(), level:'warning', module:'Integrations', message:'Third-party credentials missing', detail:'Swiggy, Zomato, Paytm, WhatsApp and hardware will stay in sandbox/device-test mode until credentials/devices are supplied.' }
-];
+export const debugEvents: DebugEvent[] = [];
 
-export const stockAudits: StockAudit[] = [
-  { id:'audit-001', branchId:'central-kitchen', itemType:'ingredient', itemId:'ing-cashew', systemQty:21, physicalQty:20.2, varianceReason:'Cashew paste prep spillage', status:'pending-approval', createdAt:nowIso() },
-  { id:'audit-002', branchId:'marathahalli', itemType:'finished-good', itemId:'prod-mysore-pak', systemQty:18, physicalQty:17.5, varianceReason:'Display tray trimming loss', status:'draft', createdAt:nowIso() }
-];
+export const stockAudits: StockAudit[] = [];
 
-export const purchaseOrders: PurchaseOrder[] = [
-  { id:'po-001', supplierId:'sup-dryfruit', expectedDate:addHours(48).slice(0,10), status:'sent', createdBy:'Admin Manager', lines:[{ingredientId:'ing-cashew', qty:70, rate:760},{ingredientId:'ing-cocoa', qty:45, rate:420}] },
-  { id:'po-002', supplierId:'sup-packaging', expectedDate:addHours(72).slice(0,10), status:'draft', createdBy:'Admin Manager', lines:[{ingredientId:'ing-box', qty:4000, rate:7.5}] }
-];
+export const purchaseOrders: PurchaseOrder[] = [];
