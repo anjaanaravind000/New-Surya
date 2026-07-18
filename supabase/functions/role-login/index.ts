@@ -13,9 +13,16 @@ Deno.serve(async request => {
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL');
   const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
-  const jwtSecret = Deno.env.get('SUPABASE_JWT_SECRET');
-  if (!supabaseUrl || !anonKey || !jwtSecret) {
-    return json({ ok: false, error: 'Server configuration is incomplete.' }, 500);
+  // Supabase reserves the SUPABASE_ prefix for its own auto-injected vars, so the
+  // custom signing secret is stored under this name instead.
+  const jwtSecret = Deno.env.get('ROLE_LOGIN_JWT_SECRET');
+
+  const missing: string[] = [];
+  if (!supabaseUrl) missing.push('SUPABASE_URL');
+  if (!anonKey) missing.push('SUPABASE_ANON_KEY');
+  if (!jwtSecret) missing.push('ROLE_LOGIN_JWT_SECRET');
+  if (missing.length > 0) {
+    return json({ ok: false, error: `Server configuration is incomplete. Missing: ${missing.join(', ')}` }, 500);
   }
 
   let body: { username?: string; password?: string };
@@ -29,37 +36,41 @@ Deno.serve(async request => {
   const password = body.password ?? '';
   if (!username || !password) return json({ ok: false, error: 'Username and password are required.' }, 400);
 
-  const supabase = createClient(supabaseUrl, anonKey);
-  const { data, error } = await supabase.rpc('verify_role_login', { p_username: username, p_password: password });
-  if (error) return json({ ok: false, error: 'Login failed. Please try again.' }, 500);
+  try {
+    const supabase = createClient(supabaseUrl as string, anonKey as string);
+    const { data, error } = await supabase.rpc('verify_role_login', { p_username: username, p_password: password });
+    if (error) return json({ ok: false, error: `Login RPC failed: ${error.message}` }, 500);
 
-  const match = Array.isArray(data) ? data[0] : data;
-  if (!match) return json({ ok: false, error: 'Username or password is incorrect.' }, 401);
+    const match = Array.isArray(data) ? data[0] : data;
+    if (!match) return json({ ok: false, error: 'Username or password is incorrect.' }, 401);
 
-  const now = Math.floor(Date.now() / 1000);
-  const payload = {
-    aud: 'authenticated',
-    role: 'authenticated',
-    sub: match.login_id,
-    iat: now,
-    exp: now + SESSION_TTL_SECONDS,
-    role_code: match.role_code,
-    role_name: match.role_name,
-    dashboards: match.dashboards,
-    display_name: match.display_name,
-  };
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+      aud: 'authenticated',
+      role: 'authenticated',
+      sub: match.login_id,
+      iat: now,
+      exp: now + SESSION_TTL_SECONDS,
+      role_code: match.role_code,
+      role_name: match.role_name,
+      dashboards: match.dashboards,
+      display_name: match.display_name,
+    };
 
-  const accessToken = await signJwt(payload, jwtSecret);
+    const accessToken = await signJwt(payload, jwtSecret as string);
 
-  return json({
-    ok: true,
-    access_token: accessToken,
-    expires_at: payload.exp,
-    role_code: match.role_code,
-    role_name: match.role_name,
-    dashboards: match.dashboards,
-    display_name: match.display_name,
-  }, 200);
+    return json({
+      ok: true,
+      access_token: accessToken,
+      expires_at: payload.exp,
+      role_code: match.role_code,
+      role_name: match.role_name,
+      dashboards: match.dashboards,
+      display_name: match.display_name,
+    }, 200);
+  } catch (err) {
+    return json({ ok: false, error: `Unexpected error: ${err instanceof Error ? err.message : String(err)}` }, 500);
+  }
 });
 
 function json(body: unknown, status: number) {
