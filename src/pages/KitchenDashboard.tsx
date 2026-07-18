@@ -1,7 +1,7 @@
 
 import { useState } from 'react';
 import { AlertTriangle, ChefHat, ClipboardCheck, Factory, PackageCheck, Route, Scale, TimerReset } from 'lucide-react';
-import { ActionButton, Card, DashboardTabs, DataTable, DebugPanel, Field, inputClass, Metric, Pill, Shell } from '../components/UI';
+import { ActionButton, Card, DataTable, DebugPanel, Field, inputClass, Metric, Pill, Shell } from '../components/UI';
 import { byId, money, productionShortages, recipeCost, recipeRequirement } from '../lib/calculations';
 import { useBakeryStore } from '../state/BakeryStore';
 import type { ProductionStatus } from '../lib/types';
@@ -24,8 +24,7 @@ export default function KitchenDashboard() {
   const shortage = productionShortages(recipe, state.ingredients, qty);
   const cost = recipe ? recipeCost(recipe, state.ingredients, qty) : undefined;
 
-  return <Shell title="Central Kitchen" subtitle="Plan production, control raw materials, move batches through quality checks, and dispatch to every branch.">
-    <DashboardTabs tabs={tabs} active={tab} setActive={setTab} />
+  return <Shell title="Central Kitchen" subtitle="Plan production, control raw materials, move batches through quality checks, and dispatch to every branch." tabs={tabs} activeTab={tab} onTabChange={t => setTab(t as Tab)}>
     {tab === 'Kitchen Cockpit' && <div className="space-y-5">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5"><Metric icon={ChefHat} label="Running batches" value={String(metrics.runningProduction.length)} helper="Active production batches across stages." tone="orange" /><Metric icon={ClipboardCheck} label="Admin approval" value={String(metrics.pendingProduction.length)} helper="Waiting before raw deduction." tone="amber" /><Metric icon={AlertTriangle} label="Low raw stock" value={String(metrics.lowIngredients.length)} helper="Kitchen purchase risk." tone="red" /><Metric icon={Scale} label="Expiry risk" value={String(metrics.expiringFinished.length)} helper="Finished batches expiring soon." tone="purple" /><Metric icon={Route} label="Dispatches" value={String(state.dispatches.length)} helper="Crate and route tracking." tone="blue" /></div>
       <Card title="Today’s production pipeline"><div className="grid gap-3 lg:grid-cols-3">{state.productionPlans.map(plan => <div key={plan.id} className="rounded-2xl bg-white/70 p-4 ring-1 ring-white/70"><div className="flex flex-wrap items-center gap-2"><Pill tone={plan.status === 'pending-admin-approval' ? 'amber' : plan.status === 'completed' ? 'green':'blue'}>{plan.status}</Pill><b>{products[plan.productId]?.name}</b></div><p className="mt-2 text-sm text-slate-600">{plan.requestedQty} {products[plan.productId]?.unit} · {plan.notes}</p><p className="text-xs text-slate-500">Demand: {Object.entries(plan.branchDemand).map(([id, q]) => `${branches[id]?.name}: ${q}`).join(' | ')}</p></div>)}</div></Card>

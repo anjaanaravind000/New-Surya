@@ -26,7 +26,7 @@ import {
   XCircle,
   type LucideIcon
 } from 'lucide-react';
-import { ActionButton, Card, DashboardTabs, DataTable, DebugPanel, Field, inputClass, Metric, Pill, Shell } from '../components/UI';
+import { ActionButton, Card, DataTable, DebugPanel, Field, inputClass, Metric, Pill, Shell } from '../components/UI';
 import { billTotals, byId, money } from '../lib/calculations';
 import { useBakeryStore } from '../state/BakeryStore';
 import type { Bill, BranchPrice, PaymentMode, Product } from '../lib/types';
@@ -150,8 +150,7 @@ export default function BranchBillingDashboard() {
     });
   };
 
-  return <Shell title="Branch POS" subtitle={`${currentBranch?.name ?? 'Selected branch'} counter billing, online orders, stock receiving, returns and closure`}>
-    <DashboardTabs tabs={tabs} active={tab} setActive={setTab} />
+  return <Shell title="Branch POS" subtitle={`${currentBranch?.name ?? 'Selected branch'} counter billing, online orders, stock receiving, returns and closure`} tabs={tabs} activeTab={tab} onTabChange={t => setTab(t as Tab)}>
 
     {tab === 'POS Billing' && <div className="space-y-4">
       <section className="flex flex-col gap-4 border border-slate-800 bg-[#111b25] px-4 py-4 text-white shadow-lg shadow-slate-950/10 lg:flex-row lg:items-center lg:px-5">

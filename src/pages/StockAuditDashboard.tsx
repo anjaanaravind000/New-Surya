@@ -11,7 +11,7 @@ import {
   ShieldCheck,
   Truck
 } from 'lucide-react';
-import { ActionButton, Card, DashboardTabs, DataTable, ExportButton, Field, inputClass, Metric, Pill, Shell } from '../components/UI';
+import { ActionButton, Card, DataTable, ExportButton, Field, inputClass, Metric, Pill, Shell } from '../components/UI';
 import { byId, downloadCsv } from '../lib/calculations';
 import { useBakeryStore } from '../state/BakeryStore';
 
@@ -33,7 +33,7 @@ export default function StockAuditDashboard() {
   const movementRows = state.ledger.filter(row => ['audit', 'return', 'waste', 'manual'].includes(row.sourceType));
   const countItems = itemType === 'ingredient' ? state.ingredients : state.products;
 
-  return <Shell title="Stock Audit" subtitle="Independent physical counting, inward checks, invoice matching, variance evidence and approval-ready history across all four branches.">
+  return <Shell title="Stock Audit" subtitle="Independent physical counting, inward checks, invoice matching, variance evidence and approval-ready history across all four branches." tabs={tabs} activeTab={tab} onTabChange={t => setTab(t as Tab)}>
     <div className="mb-4 grid gap-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm md:grid-cols-[minmax(240px,1fr)_auto] md:items-end">
       <Field label="Audit location">
         <select className={inputClass} value={state.selectedBranchId} onChange={event => dispatch({ type:'select-branch', branchId:event.target.value })}>
@@ -42,8 +42,6 @@ export default function StockAuditDashboard() {
       </Field>
       <div className="flex flex-wrap gap-2"><Pill tone="blue">Independent count</Pill><Pill tone="green">Evidence tracked</Pill><Pill tone="slate">Maker-checker approval</Pill></div>
     </div>
-
-    <DashboardTabs tabs={tabs} active={tab} setActive={setTab} />
 
     {tab === 'Audit Desk' && <div className="space-y-4">
       <section className="grid gap-4 border border-slate-800 bg-[#111b25] p-5 text-white shadow-lg lg:grid-cols-[1.2fr_.8fr] lg:p-6">

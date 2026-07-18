@@ -1,7 +1,7 @@
 
 import { useMemo, useState } from 'react';
 import { Activity, AlertTriangle, BarChart3, Boxes, ClipboardCheck, Coins, DatabaseZap, FileSpreadsheet, LineChart, PackageCheck, ShieldCheck, ShoppingCart, Sparkles, Users, Workflow, Gift, TrendingUp, Trash2, FileCheck, Tag, Bell, History, Settings, Target, Award, Truck, DollarSign, Scale, MessageCircle, TrendingDown } from 'lucide-react';
-import { ActionButton, Card, DashboardTabs, DataTable, DebugPanel, ExportButton, Field, inputClass, Metric, MiniBar, Pill, Shell, StatusPill } from '../components/UI';
+import { ActionButton, Card, DataTable, DebugPanel, ExportButton, Field, inputClass, Metric, MiniBar, Pill, Shell, StatusPill } from '../components/UI';
 import { marketFeatureCoverage, reportDefinitions } from '../data/features';
 import { externalItemMaster, itemMasterImportSummary } from '../data/importedMasters';
 import { byId, downloadCsv, money, recipeCost, recipeRequirement } from '../lib/calculations';
@@ -144,8 +144,7 @@ export default function AdminDashboard() {
     return acc;
   }, {} as Record<string, number>);
 
-  return <Shell title="Owner Overview" subtitle="Live performance, approvals and operational health across every branch and the central kitchen.">
-    <DashboardTabs tabs={tabs} active={tab} setActive={setTab} />
+  return <Shell title="Owner Overview" subtitle="Live performance, approvals and operational health across every branch and the central kitchen." tabs={tabs} activeTab={tab} onTabChange={t => setTab(t as Tab)}>
     {notice && <div className="mb-4 flex flex-col gap-3 rounded-md border border-ink/10 bg-white p-4 shadow-sm md:flex-row md:items-center md:justify-between"><div className="flex items-center gap-3"><Pill tone={notice.level === 'error' ? 'red' : notice.level === 'warning' ? 'amber' : notice.level === 'info' ? 'blue' : 'green'}>{notice.level}</Pill><span className="text-sm font-bold text-ink">{notice.message}</span></div><ActionButton tone="slate" onClick={() => setNotice(null)}>Dismiss</ActionButton></div>}
     {tab === 'Command' && <div className="space-y-5">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">

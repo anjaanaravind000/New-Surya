@@ -20,7 +20,7 @@ import {
   Users,
   WalletCards
 } from 'lucide-react';
-import { ActionButton, Card, DashboardTabs, DataTable, Field, inputClass, Metric, MiniBar, Pill, Shell } from '../components/UI';
+import { ActionButton, Card, DataTable, Field, inputClass, Metric, MiniBar, Pill, Shell } from '../components/UI';
 import { byId, money } from '../lib/calculations';
 import { useBakeryStore } from '../state/BakeryStore';
 
@@ -54,7 +54,7 @@ export default function BranchInchargeDashboard() {
 
   const openCounter = () => dispatch({ type:'open-counter', branchId:state.selectedBranchId, cashier:'Branch Incharge', terminal:'POS-1', openingCash:2000 });
 
-  return <Shell title="Branch Control" subtitle={`${currentBranch?.name ?? 'Selected branch'} daily operations, people, stock, orders, approvals and cash control`}>
+  return <Shell title="Branch Control" subtitle={`${currentBranch?.name ?? 'Selected branch'} daily operations, people, stock, orders, approvals and cash control`} tabs={tabs} activeTab={tab} onTabChange={t => setTab(t as Tab)}>
     <div className="mb-4 flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm sm:flex-row sm:items-end sm:justify-between">
       <Field label="Managing branch">
         <select className={`${inputClass} min-w-[260px]`} value={state.selectedBranchId} onChange={event => dispatch({ type:'select-branch', branchId:event.target.value })}>
@@ -66,8 +66,6 @@ export default function BranchInchargeDashboard() {
         {openSession ? <ActionButton tone="amber" onClick={() => dispatch({ type:'close-counter', sessionId:openSession.id, closingCash:3500 })}><Clock3 className="size-4" />Close shift</ActionButton> : <ActionButton tone="green" onClick={openCounter}><Store className="size-4" />Open counter</ActionButton>}
       </div>
     </div>
-
-    <DashboardTabs tabs={tabs} active={tab} setActive={setTab} />
 
     {tab === 'Today' && <div className="space-y-4">
       <section className="grid gap-4 rounded-lg bg-[#17202a] p-5 text-white shadow-lg shadow-slate-950/10 lg:grid-cols-[1.1fr_.9fr] lg:p-6">
