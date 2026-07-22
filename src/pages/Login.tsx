@@ -2,7 +2,6 @@ import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChefHat, ClipboardCheck, Eye, EyeOff, Lock, ShieldCheck, Store, UserCog, UserRound } from 'lucide-react';
 import { useAuth } from '../state/AuthContext';
-import { isSupabaseConfigured } from '../lib/supabaseClient';
 
 type Role = 'admin' | 'branch' | 'kitchen' | 'branch-incharge' | 'stock-audit';
 
@@ -32,10 +31,6 @@ export default function Login() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
-    if (!isSupabaseConfigured) {
-      setError('Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.');
-      return;
-    }
     setSubmitting(true);
     try {
       const profile = await signIn(username, password);
@@ -48,20 +43,18 @@ export default function Login() {
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#1F2933] px-4 py-10">
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#0b0d10] px-4 py-10">
       <div className="pointer-events-none absolute inset-0">
-        <div className="absolute -left-32 -top-32 size-[420px] rounded-full bg-[#C9871F]/20 blur-[120px]" />
-        <div className="absolute -bottom-40 -right-24 size-[460px] rounded-full bg-emerald-500/10 blur-[130px]" />
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.06)_1px,transparent_0)] [background-size:26px_26px]" />
       </div>
 
       <div className="relative grid w-full max-w-5xl overflow-hidden rounded-2xl border border-white/10 bg-white/[0.03] shadow-[0_30px_80px_-20px_rgba(0,0,0,0.6)] backdrop-blur-xl md:grid-cols-2">
         {/* Left brand / role panel */}
-        <div className="hidden flex-col justify-between bg-gradient-to-br from-[#1F2933] via-[#243B53] to-[#1F2933] p-8 md:flex">
+        <div className="hidden flex-col justify-between bg-gradient-to-br from-[#171a1d] via-[#15181b] to-[#0b0d10] p-8 md:flex">
           <div>
             <img src="/brand/new-surya-client-logo.jpg" alt="New Surya Sweets & Savouries" className="h-auto w-[190px] rounded-md object-contain" />
-            <h1 className="mt-8 font-display text-2xl font-extrabold leading-tight text-white">One login.<br />Your own workspace.</h1>
-            <p className="mt-2 max-w-xs text-sm leading-6 text-slate-400">Each role sees only what it needs — nothing else clutters the screen.</p>
+            <h1 className="mt-8 text-2xl font-extrabold leading-tight text-white">One login.<br />Your own workspace.</h1>
+            <p className="mt-2 max-w-xs text-sm leading-6 text-slate-400">Each role sees only what it needs. Nothing else clutters the screen.</p>
           </div>
           <div className="space-y-2">
             {roleCards.map(item => {
@@ -71,9 +64,9 @@ export default function Login() {
                   key={item.role}
                   type="button"
                   onClick={() => handlePick(item.role)}
-                  className="group flex w-full items-center gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3.5 py-3 text-left transition hover:border-[#C9871F]/40 hover:bg-[#C9871F]/10"
+                  className="group flex w-full items-center gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3.5 py-3 text-left transition hover:border-[#c18a31]/40 hover:bg-[#c18a31]/10"
                 >
-                  <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-white/[0.06] text-[#F5D9A8] ring-1 ring-white/10 transition group-hover:bg-[#C9871F]/20">
+                  <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-white/[0.06] text-[#e3b563] ring-1 ring-white/10 transition group-hover:bg-[#c18a31]/20">
                     <Icon className="size-4.5" />
                   </div>
                   <div className="min-w-0">
@@ -84,20 +77,20 @@ export default function Login() {
               );
             })}
           </div>
-          <p className="text-[11px] text-slate-600">New Surya Sweets &amp; Savouries · Since 1995</p>
+          <p className="text-[11px] text-slate-600">New Surya Sweets &amp; Savouries | Since 1995</p>
         </div>
 
         {/* Right form panel */}
-        <div className="flex flex-col justify-center bg-[#1F2933] p-8 sm:p-10">
+        <div className="flex flex-col justify-center bg-[#0f1114] p-8 sm:p-10">
           <div className="mx-auto w-full max-w-sm">
             <div className="mb-8 flex items-center gap-3 md:hidden">
               <img src="/brand/new-surya-client-logo.jpg" alt="New Surya Sweets & Savouries" className="h-auto w-[150px] rounded-md object-contain" />
             </div>
 
-            <div className="mb-1 inline-flex items-center gap-1.5 rounded-full border border-[#C9871F]/30 bg-[#C9871F]/10 px-3 py-1 text-[11px] font-bold text-[#F5D9A8]">
+            <div className="mb-1 inline-flex items-center gap-1.5 rounded-full border border-[#c18a31]/30 bg-[#c18a31]/10 px-3 py-1 text-[11px] font-bold text-[#e3b563]">
               <Lock className="size-3" /> Secure workspace access
             </div>
-            <h2 className="mt-3 font-display text-2xl font-extrabold text-white">Sign in</h2>
+            <h2 className="mt-3 text-2xl font-extrabold text-white">Sign in</h2>
             <p className="mt-1 text-sm text-slate-500">Enter your role's username and password to continue.</p>
 
             <form onSubmit={handleSubmit} className="mt-7 space-y-4">
@@ -110,7 +103,7 @@ export default function Login() {
                     onChange={e => setUsername(e.target.value)}
                     placeholder="e.g. Admin"
                     autoComplete="username"
-                    className="h-12 w-full rounded-xl border border-white/10 bg-white/[0.04] pl-10 pr-3 text-sm font-medium text-white outline-none transition placeholder:text-slate-600 focus:border-[#C9871F]/50 focus:ring-4 focus:ring-[#C9871F]/10"
+                    className="h-12 w-full rounded-xl border border-white/10 bg-white/[0.04] pl-10 pr-3 text-sm font-medium text-white outline-none transition placeholder:text-slate-600 focus:border-[#c18a31]/50 focus:ring-4 focus:ring-[#c18a31]/10"
                   />
                 </div>
               </div>
@@ -123,9 +116,9 @@ export default function Login() {
                     value={password}
                     onChange={e => setPassword(e.target.value)}
                     type={showPassword ? 'text' : 'password'}
-                    placeholder="••••••••"
+                    placeholder="Password"
                     autoComplete="current-password"
-                    className="h-12 w-full rounded-xl border border-white/10 bg-white/[0.04] pl-10 pr-11 text-sm font-medium text-white outline-none transition placeholder:text-slate-600 focus:border-[#C9871F]/50 focus:ring-4 focus:ring-[#C9871F]/10"
+                    className="h-12 w-full rounded-xl border border-white/10 bg-white/[0.04] pl-10 pr-11 text-sm font-medium text-white outline-none transition placeholder:text-slate-600 focus:border-[#c18a31]/50 focus:ring-4 focus:ring-[#c18a31]/10"
                   />
                   <button
                     type="button"
@@ -147,9 +140,9 @@ export default function Login() {
               <button
                 type="submit"
                 disabled={submitting || !username || !password}
-                className="mt-2 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#C9871F] to-[#8F5D15] text-sm font-bold text-white shadow-[0_10px_30px_-10px_rgba(193,138,49,0.6)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+                className="mt-2 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#c18a31] to-[#a06d20] text-sm font-bold text-white shadow-[0_10px_30px_-10px_rgba(193,138,49,0.6)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {submitting ? 'Signing in…' : 'Sign in'}
+                {submitting ? 'Signing in...' : 'Sign in'}
               </button>
             </form>
 
@@ -159,7 +152,7 @@ export default function Login() {
                   key={item.role}
                   type="button"
                   onClick={() => handlePick(item.role)}
-                  className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-2.5 text-center text-[11px] font-semibold text-slate-300 hover:border-[#C9871F]/40"
+                  className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-2.5 text-center text-[11px] font-semibold text-slate-300 hover:border-[#c18a31]/40"
                 >
                   {item.label}
                 </button>
