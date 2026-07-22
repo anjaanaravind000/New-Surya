@@ -10,6 +10,7 @@ export default defineConfig({
   },
   build: {
     sourcemap: false, // SEC-14: never expose source in production
+    chunkSizeWarningLimit: 800,
     rollupOptions: {
       output: {
         manualChunks(id) {
@@ -18,7 +19,6 @@ export default defineConfig({
           if (id.includes("recharts") || id.includes("chart.js")) return "charts-vendor";
           if (id.includes("jspdf") || id.includes("qrcode")) return "document-vendor";
           if (id.includes("framer-motion")) return "motion-vendor";
-          if (id.includes("@radix-ui") || id.includes("cmdk") || id.includes("vaul")) return "ui-vendor";
           return "vendor";
         },
       },
