@@ -1,7 +1,7 @@
 
 /* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useContext, useEffect, useMemo, useReducer } from 'react';
-import type { AdvanceOrder, AppUser, AttendanceRecord, Bill, Branch, BranchPrice, CartLine, CounterSession, CreditEntry, Customer, DebugEvent, Dispatch, FinishedStock, GoodsReceipt, Ingredient, Integration, InventoryLedgerEntry, OnlineOrder, PaymentMode, PrintJob, Product, ProductionPlan, ProductionStatus, PurchaseOrder, Recipe, Refund, Role, StockAudit, Supplier } from '../lib/types';
+import type { AdvanceOrder, AppUser, AttendanceRecord, Bill, Branch, BranchPrice, CartLine, CounterSession, CreditEntry, Customer, DebugEvent, Dispatch, FinishedStock, GoodsReceipt, Ingredient, Integration, InventoryLedgerEntry, OnlineOrder, PaymentMode, PrintJob, Product, ProductionPlan, ProductionStatus, Promotion, PurchaseOrder, Quotation, Recipe, Refund, Role, StockAudit, Supplier } from '../lib/types';
 import * as seed from '../data/seed';
 import { allocateFinishedStock, billTotals, byId, canFulfillCart, nowIso, productionShortages, recipeCost, recipeRequirement, round2, today } from '../lib/calculations';
 
@@ -25,6 +25,8 @@ type State = {
   refunds: Refund[];
   onlineOrders: OnlineOrder[];
   customers: Customer[];
+  quotations: Quotation[];
+  promotions: Promotion[];
   creditEntries: CreditEntry[];
   advanceOrders: AdvanceOrder[];
   attendance: AttendanceRecord[];
@@ -49,6 +51,7 @@ type Action =
   | { type:'toggle-user'; userId: string }
   | { type:'set-role-permission'; roleId: string; moduleKey: string; actions: string[] }
   | { type:'add-product'; product: Omit<Product, 'id' | 'barcode'> }
+  | { type:'update-product'; productId: string; changes: Partial<Pick<Product, 'name' | 'category' | 'price' | 'unit' | 'taxRate'>> }
   | { type:'toggle-product'; productId: string }
   | { type:'upsert-branch-price'; branchPrice: BranchPrice }
   | { type:'create-production'; productId: string; requestedQty: number; branchDemand: Record<string, number>; notes: string; requestedBy: string }
@@ -63,6 +66,14 @@ type Action =
   | { type:'create-purchase-order'; po: Omit<PurchaseOrder, 'id'> }
   | { type:'receive-purchase-order'; poId: string; invoiceNo: string; receivedBy: string }
   | { type:'manual-stock-adjust'; ingredientId: string; qtyChange: number; reason: string; userName: string }
+  | { type:'add-ingredient'; ingredient: Omit<Ingredient, 'id' | 'batchNo'> }
+  | { type:'update-customer-credit-limit'; customerId: string; creditLimit: number; approvedBy: string }
+  | { type:'add-supplier'; supplier: Omit<Supplier, 'id'> }
+  | { type:'add-customer'; customer: Omit<Customer, 'id'> }
+  | { type:'add-promotion'; name: string; trigger: string; reward: string }
+  | { type:'toggle-promotion'; promotionId: string }
+  | { type:'mark-print-job'; printJobId: string; status: PrintJob['status'] }
+  | { type:'reprint-label'; stockId: string }
   | { type:'open-counter'; branchId: string; cashier: string; terminal: string; openingCash: number }
   | { type:'close-counter'; sessionId: string; closingCash: number }
   | { type:'add-to-cart'; productId: string; qty: number; price?: number; discountPct?: number }
@@ -81,7 +92,11 @@ type Action =
   | { type:'reject-online-order'; orderId: string; reason: string }
   | { type:'reconcile-online-order'; orderId: string; payoutReceived: number }
   | { type:'create-advance-order'; order: Omit<AdvanceOrder, 'id' | 'status'> }
+  | { type:'book-delivery-order'; branchId: string; customerName: string; customerPhone: string; productId: string; qty: number; deliveryAt: string; designNotes: string; imageRequired: boolean; advancePaid: number; balance: number }
   | { type:'advance-status'; orderId: string; status: AdvanceOrder['status'] }
+  | { type:'create-quotation'; customerName: string; customerPhone?: string; companyName?: string; gstNumber?: string }
+  | { type:'quotation-status'; quotationId: string; status: Quotation['status'] }
+  | { type:'convert-quotation'; quotationId: string }
   | { type:'add-credit-collection'; customerId: string; amount: number; note: string }
   | { type:'record-attendance'; record: Omit<AttendanceRecord, 'id'> }
   | { type:'record-staff-advance'; attendanceId: string; amount: number; reason: string }
@@ -111,6 +126,8 @@ function initialState(): State {
     refunds: [],
     onlineOrders: seed.onlineOrders,
     customers: seed.customers,
+    quotations: [],
+    promotions: [],
     creditEntries: seed.creditEntries as CreditEntry[],
     advanceOrders: seed.advanceOrders,
     attendance: seed.attendance,
@@ -211,6 +228,11 @@ function reducer(state: State, action: Action): State {
       case 'toggle-product': {
         const products = state.products.map(p => p.id === action.productId ? { ...p, active: !p.active } : p);
         return addLog({ ...state, products }, { level:'success', module:'Item Master', message:'Product active status changed' });
+      }
+      case 'update-product': {
+        const products = state.products.map(p => p.id === action.productId ? { ...p, ...action.changes } : p);
+        const product = products.find(p => p.id === action.productId);
+        return addLog({ ...state, products }, { level:'success', module:'Item Master', message:`${product?.name ?? 'Product'} updated` });
       }
       case 'upsert-branch-price': {
         const exists = state.branchPrices.some(bp => bp.id === action.branchPrice.id);
@@ -314,6 +336,42 @@ function reducer(state: State, action: Action): State {
         const ledger = [createLedger({ branchId:'central-kitchen', itemType:'ingredient', itemId:action.ingredientId, qtyChange:action.qtyChange, unit:state.ingredients.find(i => i.id === action.ingredientId)?.unit ?? '', reason:action.reason, sourceType:'manual', sourceId:'manual', userName:action.userName }), ...state.ledger];
         return addLog({ ...state, ingredients, ledger }, { level:'success', module:'Inventory', message:'Manual stock adjustment recorded' });
       }
+      case 'add-ingredient': {
+        const ingredient: Ingredient = { id: crypto.randomUUID(), batchNo: `BATCH-${Date.now()}`, ...action.ingredient };
+        return addLog({ ...state, ingredients: [ingredient, ...state.ingredients] }, { level:'success', module:'Inventory', message:`${ingredient.name} added to raw material register` });
+      }
+      case 'update-customer-credit-limit': {
+        const customers = state.customers.map(c => c.id === action.customerId ? { ...c, creditLimit: action.creditLimit } : c);
+        const customer = customers.find(c => c.id === action.customerId);
+        return addLog({ ...state, customers }, { level:'success', module:'Credit Control', message:`${customer?.name ?? 'Customer'} credit limit set to ${action.creditLimit} by ${action.approvedBy}` });
+      }
+      case 'add-supplier': {
+        const supplier: Supplier = { id: crypto.randomUUID(), ...action.supplier };
+        return addLog({ ...state, suppliers: [supplier, ...state.suppliers] }, { level:'success', module:'Suppliers', message:`${supplier.name} added to supplier master` });
+      }
+      case 'add-customer': {
+        const customer: Customer = { id: crypto.randomUUID(), ...action.customer };
+        return addLog({ ...state, customers: [customer, ...state.customers] }, { level:'success', module:'CRM', message:`${customer.name} added to customer master` });
+      }
+      case 'add-promotion': {
+        const promotion: Promotion = { id: crypto.randomUUID(), name:action.name, trigger:action.trigger, reward:action.reward, active:true, createdAt:nowIso() };
+        return addLog({ ...state, promotions: [promotion, ...state.promotions] }, { level:'success', module:'Promotions', message:`${promotion.name} saved` });
+      }
+      case 'toggle-promotion': {
+        const promotions = state.promotions.map(p => p.id === action.promotionId ? { ...p, active: !p.active } : p);
+        return { ...state, promotions };
+      }
+      case 'mark-print-job': {
+        const printJobs = state.printJobs.map(j => j.id === action.printJobId ? { ...j, status:action.status } : j);
+        return { ...state, printJobs };
+      }
+      case 'reprint-label': {
+        const stock = state.finishedStocks.find(s => s.id === action.stockId);
+        if (!stock) return state;
+        const product = state.products.find(p => p.id === stock.productId);
+        const printJobs: PrintJob[] = [{ id: crypto.randomUUID(), type:'label', target:'label-printer', payload:`${product?.name} | Batch ${stock.batchNo} | Exp ${stock.expiryAt.slice(0,10)}`, status:'queued', createdAt: nowIso() }, ...state.printJobs];
+        return addLog({ ...state, printJobs }, { level:'success', module:'Packing', message:`Label reprint queued for ${product?.name} batch ${stock.batchNo}` });
+      }
       case 'open-counter': {
         const already = activeCounter(state, action.branchId);
         if (already) return addLog(state, { level:'warning', module:'Counter', message:'Counter already open for this branch', detail:`Session ${already.id}` });
@@ -400,6 +458,44 @@ function reducer(state: State, action: Action): State {
         const order = state.onlineOrders.find(o => o.id === action.orderId);
         const level = order && Math.abs(action.payoutReceived - order.payoutExpected) > 1 ? 'warning' : 'success';
         return addLog({ ...state, onlineOrders }, { level, module:'Online Reconciliation', message:'Online payout reconciled', detail:order ? `Expected ${order.payoutExpected}, received ${action.payoutReceived}` : undefined });
+      }
+      case 'create-quotation': {
+        if (!state.cart.length) return state;
+        const totals = billTotals(state.cart, state.products);
+        const quoteNo = `QT-${new Date().toISOString().slice(0,10).replaceAll('-','')}-${String(state.quotations.length + 1).padStart(4,'0')}`;
+        const quotation: Quotation = {
+          id:crypto.randomUUID(), branchId:state.selectedBranchId, quoteNo,
+          customerName:action.customerName.trim() || 'Customer', customerPhone:action.customerPhone,
+          companyName:action.companyName, gstNumber:action.gstNumber,
+          lines:state.cart, subTotal:totals.subTotal, total:totals.grandTotal, status:'open', createdAt:nowIso()
+        };
+        return addLog({ ...state, quotations:[quotation, ...state.quotations] }, { level:'success', module:'Quotation', message:`Quotation ${quoteNo} saved for ${quotation.customerName}` });
+      }
+      case 'quotation-status': {
+        const quotations = state.quotations.map(q => q.id === action.quotationId ? { ...q, status:action.status } : q);
+        return { ...state, quotations };
+      }
+      case 'convert-quotation': {
+        const quotation = state.quotations.find(q => q.id === action.quotationId);
+        if (!quotation || quotation.status !== 'open') return state;
+        const quotations = state.quotations.map(q => q.id === quotation.id ? { ...q, status:'converted' as const } : q);
+        return addLog({ ...state, quotations, cart:quotation.lines, selectedBranchId:quotation.branchId }, { level:'success', module:'Quotation', message:`Quotation ${quotation.quoteNo} loaded into the current bill` });
+      }
+      case 'book-delivery-order': {
+        const phone = action.customerPhone.trim();
+        let customers = state.customers;
+        let customerId = phone ? customers.find(c => c.phone && c.phone === phone)?.id : undefined;
+        if (!customerId) {
+          const newCustomer: Customer = { id:crypto.randomUUID(), name: action.customerName.trim() || 'Customer', phone, type:'retail', creditLimit:0, loyaltyPoints:0, favoriteProducts:[] };
+          customers = [newCustomer, ...customers];
+          customerId = newCustomer.id;
+        }
+        const order: AdvanceOrder = {
+          id:crypto.randomUUID(), status:'booked', branchId:action.branchId, customerId, productId:action.productId,
+          qty:action.qty, deliveryAt:action.deliveryAt, designNotes:action.designNotes, imageRequired:action.imageRequired,
+          advancePaid:action.advancePaid, balance:action.balance
+        };
+        return addLog({ ...state, customers, advanceOrders:[order, ...state.advanceOrders] }, { level:'success', module:'Advance Orders', message:'Delivery order booked and balance tracked' });
       }
       case 'create-advance-order': {
         const order: AdvanceOrder = { id:crypto.randomUUID(), status:'booked', ...action.order };
