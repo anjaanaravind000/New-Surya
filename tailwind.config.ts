@@ -26,6 +26,7 @@ export default {
 			colors: {
 				ink: { DEFAULT: '#1F2933', 700: '#243B53', 600: '#334E68' },
 				paper: { DEFAULT: '#FFFFFF', dim: '#F4F7F6' },
+				marigold: { DEFAULT: '#C9871F', 600: '#AD7119', 700: '#8F5D15', 100: '#FBEDD3', 50: '#FDF6E8' },
 				ember: { DEFAULT: '#C44536', 600: '#A7342B', 700: '#84261F' },
 				oxblood: { DEFAULT: '#B42318' },
 				tgreen: { DEFAULT: '#047857' },
