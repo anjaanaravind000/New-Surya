@@ -249,6 +249,20 @@ export type CounterSession = {
 };
 
 export type CartLine = { productId: string; qty: number; price: number; discountPct: number; notes?: string };
+export type Quotation = {
+  id: string;
+  branchId: string;
+  quoteNo: string;
+  customerName: string;
+  customerPhone?: string;
+  companyName?: string;
+  gstNumber?: string;
+  lines: CartLine[];
+  subTotal: number;
+  total: number;
+  status: 'open' | 'converted' | 'cancelled';
+  createdAt: string;
+};
 export type PaymentMode = 'cash' | 'card' | 'upi' | 'paytm' | 'split' | 'credit' | 'online' | 'wallet';
 export type Bill = {
   id: string;
@@ -289,6 +303,15 @@ export type OnlineOrder = {
   payoutExpected: number;
   payoutReceived?: number;
   receivedAt: string;
+};
+
+export type Promotion = {
+  id: string;
+  name: string;
+  trigger: string;
+  reward: string;
+  active: boolean;
+  createdAt: string;
 };
 
 export type Customer = {
@@ -344,7 +367,7 @@ export type Integration = {
 };
 
 export type PrintJob = { id: string; type: 'bill' | 'kot' | 'label' | 'dispatch' | 'closure' | 'report'; target: string; payload: string; status: 'queued' | 'printed' | 'failed'; createdAt: string };
-export type DebugEvent = { id: string; at: string; level: 'info' | 'success' | 'warning' | 'error'; module: string; message: string; detail?: string };
+export type DebugEvent = { id: string; at: string; level: 'info' | 'success' | 'warning' | 'error'; module: string; message: string; detail?: string; actor?: string };
 
 export type ReportDefinition = {
   id: string;
