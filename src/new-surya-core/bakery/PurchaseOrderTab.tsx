@@ -1,0 +1,405 @@
+// src/bakery/PurchaseOrderTab.tsx
+// Store dashboard tab - raise and manage purchase orders for raw materials.
+
+import { useState, useEffect } from 'react';
+import { Plus, Loader2, ShoppingCart, CheckCircle2, Send, Truck, Trash2, ChevronDown, ChevronUp, Ban, Search, X } from 'lucide-react';
+import { usePurchaseOrderStore, type POItem, type POStatus } from './purchaseOrderStore';
+import { useStoreStockStore } from './storeStockStore';
+import { useSupplierStore } from './supplierStore';
+import { useAuthStore } from '@/stores/authStore';
+import { cn } from '@/lib/utils';
+import { useOperationalBranchCatalog } from '@/hooks/useOperationalBranchCatalog';
+import { useBranchStore } from '@/branch/branchStore';
+import { useBranchOpsStore } from '@/branch/branchOpsStore';
+
+type ReceiverBranchScope = 'PRIMARY_OUTLET';
+
+const STATUS_META: Record<POStatus, { label: string; color: string; icon: React.ElementType }> = {
+  draft:    { label: 'Draft',    color: 'bg-muted text-muted-foreground border-border',          icon: ShoppingCart },
+  sent:     { label: 'Sent',     color: 'bg-blue-50 text-blue-700 border-blue-200',              icon: Send         },
+  received: { label: 'Received', color: 'bg-emerald-50 text-emerald-700 border-emerald-200',     icon: CheckCircle2 },
+  cancelled:{ label: 'Cancelled',color: 'bg-red-50 text-red-700 border-red-200',                 icon: Ban          },
+};
+
+function POCard({ po, onStatusChange, onDelete, currentStockFor }: {
+  po: ReturnType<typeof usePurchaseOrderStore.getState>['orders'][0];
+  onStatusChange: (id: string, status: POStatus) => void;
+  onDelete: (id: string) => void;
+  currentStockFor?: (itemName: string) => { quantity: number; unit: string } | null;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const meta = STATUS_META[po.status];
+  const Icon = meta.icon;
+
+  return (
+    <div className="bg-card border border-border rounded-2xl overflow-hidden">
+      <button className="w-full px-4 py-3.5 flex items-center gap-3 text-left" onClick={() => setExpanded(e => !e)}>
+        <div className="size-9 rounded-xl bg-muted flex items-center justify-center shrink-0">
+          <Icon className="size-4 text-muted-foreground" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-0.5">
+            <p className="text-sm font-body font-bold text-foreground">{po.orderNumber}</p>
+            <span className={cn('text-[10px] font-body font-bold px-2 py-0.5 rounded-full border', meta.color)}>
+              {meta.label}
+            </span>
+          </div>
+          <p className="text-xs font-body text-muted-foreground truncate">
+            {po.supplierName} - {po.items.length} item(s)
+          </p>
+        </div>
+        <div className="shrink-0 text-right">
+          <p className="text-[10px] font-body text-muted-foreground">
+            {new Date(po.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
+          </p>
+          {expanded ? <ChevronUp className="size-3.5 text-muted-foreground mt-1 ml-auto" /> : <ChevronDown className="size-3.5 text-muted-foreground mt-1 ml-auto" />}
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="px-4 pb-4 space-y-3 border-t border-border pt-3">
+          <div className="rounded-xl border border-border overflow-hidden">
+            <div className="grid grid-cols-12 px-3 py-2 bg-muted/50 text-[9px] font-body font-bold text-muted-foreground uppercase">
+              <span className="col-span-5">Material</span>
+              <span className="col-span-2 text-right">Order Qty</span>
+              <span className="col-span-2 text-right">Unit</span>
+              <span className="col-span-3 text-right">Current Stock</span>
+            </div>
+            {po.items.map((item, i) => {
+              const live = currentStockFor?.(item.materialName);
+              return (
+                <div key={i} className="grid grid-cols-12 px-3 py-2.5 border-t border-border text-xs font-body">
+                  <span className="col-span-5 font-semibold text-foreground">{item.materialName}</span>
+                  <span className="col-span-2 text-right text-foreground">{item.quantity}</span>
+                  <span className="col-span-2 text-right text-muted-foreground">{item.unit}</span>
+                  <span className="col-span-3 text-right font-bold text-emerald-700">{live ? `${live.quantity.toLocaleString('en-IN', { maximumFractionDigits: 3 })} ${live.unit}` : '—'}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          {po.notes && (
+            <p className="text-xs font-body text-muted-foreground bg-muted/40 px-3 py-2 rounded-xl">{po.notes}</p>
+          )}
+
+          <div className="flex items-center gap-2 text-[10px] font-body text-muted-foreground">
+            <span>Created {new Date(po.createdAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span>
+            {po.sentAt && <><span>-</span><span>Sent {new Date(po.sentAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span></>}
+            {po.receivedAt && <><span>-</span><span>Received {new Date(po.receivedAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span></>}
+            {po.cancelledAt && <><span>-</span><span>Cancelled {new Date(po.cancelledAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span></>}
+          </div>
+
+          <div className="flex gap-2">
+            {po.status === 'draft' && (
+              <button
+                onClick={() => onStatusChange(po.id, 'sent')}
+                className="flex-1 h-9 rounded-xl bg-blue-500 text-white text-xs font-body font-bold flex items-center justify-center gap-1.5 active:scale-95"
+              >
+                <Send className="size-3.5" /> Mark as Sent
+              </button>
+            )}
+            {po.status === 'sent' && (
+              <button
+                onClick={() => onStatusChange(po.id, 'received')}
+                className="flex-1 h-9 rounded-xl bg-emerald-500 text-white text-xs font-body font-bold flex items-center justify-center gap-1.5 active:scale-95"
+              >
+                <Truck className="size-3.5" /> Mark as Received
+              </button>
+            )}
+            {po.status !== 'received' && po.status !== 'cancelled' && (
+              <button
+                onClick={() => onDelete(po.id)}
+                title="Cancel purchase order"
+                className="size-9 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center active:scale-95"
+              >
+                <Trash2 className="size-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchScope?: ReceiverBranchScope }) {
+  const { items: stockItems, loaded: stockLoaded, load: loadStock } = useStoreStockStore();
+  const { suppliers: storeSuppliers, loaded: suppliersLoaded, load: loadSuppliers } = useSupplierStore();
+  const branchSuppliers = useBranchOpsStore((state) => state.suppliers);
+  const { currentUser }       = useAuthStore();
+  const { createPO }          = usePurchaseOrderStore();
+  const { items: primary_outletItems } = useOperationalBranchCatalog('PRIMARY_OUTLET');
+  const primary_outletStock = useBranchStore((state) => state.stock.PRIMARY_OUTLET);
+
+  useEffect(() => {
+    if (!branchScope && !suppliersLoaded) void loadSuppliers();
+    if (!branchScope && !stockLoaded) void loadStock();
+  }, [branchScope, loadStock, loadSuppliers, stockLoaded, suppliersLoaded]);
+
+  const suppliers = branchScope === 'PRIMARY_OUTLET'
+    ? branchSuppliers.filter((supplier) => supplier.branch === 'PRIMARY_OUTLET').map((supplier) => ({ id: supplier.id, businessName: supplier.name }))
+    : storeSuppliers.map((supplier) => ({ id: supplier.id, businessName: supplier.businessName }));
+  const [supplierId, setSupplierId] = useState('');
+  const [notes,      setNotes]      = useState('');
+  const [itemSearch, setItemSearch] = useState('');
+  const materialOptions = branchScope === 'PRIMARY_OUTLET'
+    ? primary_outletItems.map((item) => {
+        const live = primary_outletStock.find((stockItem) => stockItem.itemBarcode === item.barcode || stockItem.itemName.toLowerCase() === item.name.toLowerCase());
+        return { id: String(item.barcode), name: item.name, unit: item.uom === 'Kgs' ? 'kg' : 'pcs', category: item.category, currentStock: Number(live?.availableQuantity ?? live?.quantity ?? 0), stockUnit: live?.unit || (item.uom === 'Kgs' ? 'kg' : 'pcs') };
+      })
+    : stockItems.map((item) => ({ id: item.id, name: item.name, unit: item.unit, category: 'Store Material', currentStock: Number(item.quantity || 0), stockUnit: item.unit }));
+  const filteredMaterialOptions = materialOptions.filter((item) =>
+    !itemSearch.trim() || item.name.toLowerCase().includes(itemSearch.toLowerCase()) || item.category.toLowerCase().includes(itemSearch.toLowerCase()),
+  );
+  const firstMaterial = materialOptions[0];
+  const [lines,      setLines]      = useState<POItem[]>([{ materialName: firstMaterial?.name ?? '', quantity: 1, unit: firstMaterial?.unit ?? 'kg' }]);
+  const [saving,     setSaving]     = useState(false);
+  const [error,      setError]      = useState<string | null>(null);
+
+  const addLine    = () => setLines(p => [...p, { materialName: firstMaterial?.name ?? '', quantity: 1, unit: firstMaterial?.unit ?? 'kg' }]);
+  const removeLine = (i: number) => setLines(p => p.filter((_, j) => j !== i));
+  const setItem    = (i: number, name: string) => {
+    const selected = materialOptions.find(s => s.name === name);
+    setLines(p => p.map((l, j) => j === i ? { ...l, materialName: name, unit: selected?.unit ?? l.unit } : l));
+  };
+  const setQty = (i: number, qty: number) => setLines(p => p.map((l, j) => j === i ? { ...l, quantity: qty } : l));
+
+  useEffect(() => {
+    if (!supplierId && suppliers.length > 0) setSupplierId(suppliers[0].id);
+    if (supplierId && !suppliers.some((supplier) => supplier.id === supplierId)) setSupplierId(suppliers[0]?.id ?? '');
+  }, [supplierId, suppliers]);
+
+  const chooseSearchResult = (name: string) => {
+    const emptyIndex = lines.findIndex((line) => !line.materialName);
+    if (emptyIndex >= 0) setItem(emptyIndex, name);
+    else if (lines.length === 1 && lines[0].materialName === firstMaterial?.name) setItem(0, name);
+    else {
+      const selected = materialOptions.find((item) => item.name === name);
+      setLines((prev) => [...prev, { materialName: name, quantity: 1, unit: selected?.unit ?? 'pcs' }]);
+    }
+    setItemSearch('');
+  };
+
+  const supplier = suppliers.find(s => s.id === supplierId);
+
+  const handleSubmit = async () => {
+    if (!supplierId || !supplier || lines.some(l => !l.materialName || l.quantity <= 0)) {
+      setError('Please fill all fields.'); return;
+    }
+    setSaving(true);
+    const err = await createPO({
+      supplierId,
+      supplierName: supplier.businessName,
+      branch: branchScope,
+      items: lines,
+      status: 'draft',
+      notes,
+      createdBy: currentUser?.displayName ?? 'Store',
+    });
+    setSaving(false);
+    if (err) { setError(err); return; }
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end bg-black/60" onClick={onClose}>
+      <div className="w-full bg-background rounded-t-3xl px-4 pt-5 pb-10 space-y-4 max-h-[90vh] overflow-y-auto"
+        onClick={e => e.stopPropagation()}>
+        <div className="w-10 h-1 bg-border rounded-full mx-auto -mt-1 mb-2" />
+        <h3 className="font-display font-bold text-lg text-foreground">New Purchase Order</h3>
+
+        <div className="space-y-1">
+          <p className="text-[11px] font-body font-bold text-muted-foreground uppercase">Supplier</p>
+          <select value={supplierId} onChange={e => setSupplierId(e.target.value)}
+            className="w-full h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none">
+            {suppliers.length === 0 ? <option value="">No suppliers added by Outlet Management</option> : suppliers.map(s => <option key={s.id} value={s.id}>{s.businessName}</option>)}
+          </select>
+          {branchScope === 'PRIMARY_OUTLET' && suppliers.length === 0 && <p className="text-[11px] font-bold text-amber-700">Add suppliers in Outlet Management → Suppliers before creating a purchase order.</p>}
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-[11px] font-body font-bold text-muted-foreground uppercase">Outlet items</p>
+              <p className="text-[11px] font-body font-semibold text-muted-foreground">Add multiple items in one purchase order.</p>
+            </div>
+            <div className="relative sm:w-72">
+              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <input
+                value={itemSearch}
+                onChange={(e) => setItemSearch(e.target.value)}
+                placeholder="Search item or category"
+                className="h-10 w-full rounded-xl border border-border bg-background pl-9 pr-9 text-sm font-body font-bold focus:outline-none"
+              />
+              {itemSearch && (
+                <button type="button" onClick={() => setItemSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2">
+                  <X className="size-4 text-muted-foreground" />
+                </button>
+              )}
+            </div>
+          </div>
+          {itemSearch.trim() && (
+            <div className="max-h-52 overflow-y-auto rounded-2xl border border-border bg-card p-2 shadow-sm">
+              {filteredMaterialOptions.length === 0 ? (
+                <p className="px-3 py-5 text-center text-xs font-semibold text-muted-foreground">No matching outlet item.</p>
+              ) : filteredMaterialOptions.slice(0, 40).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => chooseSearchResult(item.name)}
+                  className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left hover:bg-muted"
+                >
+                  <span className="text-sm font-bold text-foreground">{item.name}</span>
+                  <span className="text-[10px] font-semibold text-muted-foreground">{item.category} · Stock {item.currentStock.toLocaleString('en-IN', { maximumFractionDigits: 3 })} {item.stockUnit}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {lines.map((line, i) => (
+            (() => {
+              const selected = materialOptions.find((item) => item.name === line.materialName);
+              const options = selected && !filteredMaterialOptions.some((item) => item.name === selected.name)
+                ? [selected, ...filteredMaterialOptions]
+                : filteredMaterialOptions;
+              return (
+                <div key={i} className="rounded-2xl border border-border bg-muted/20 p-2">
+                  <div className="flex gap-2 items-center">
+                    <select value={line.materialName} onChange={e => setItem(i, e.target.value)}
+                      className="flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none">
+                      {options.map(s => <option key={s.id} value={s.name}>{s.name} ({s.category})</option>)}
+                    </select>
+                    <input type="number" min={1} value={line.quantity} onChange={e => setQty(i, Number(e.target.value))}
+                      className="w-16 h-10 px-2 rounded-xl border border-border bg-background text-sm font-body text-center focus:outline-none" />
+                    <span className="text-xs font-body text-muted-foreground w-8">{line.unit}</span>
+                    <button onClick={() => removeLine(i)} disabled={lines.length === 1}
+                      className="size-9 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center disabled:opacity-30">
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  </div>
+                  <p className="mt-1.5 text-[10px] font-black text-emerald-700">Current store stock: {selected ? `${selected.currentStock.toLocaleString('en-IN', { maximumFractionDigits: 3 })} ${selected.stockUnit}` : 'Not available'}</p>
+                </div>
+              );
+            })()
+          ))}
+          <button onClick={addLine}
+            className="w-full h-9 rounded-xl border-2 border-dashed border-border text-sm font-body font-semibold text-muted-foreground flex items-center justify-center gap-1.5">
+            <Plus className="size-4" /> Add Material
+          </button>
+        </div>
+
+        <div className="space-y-1">
+          <p className="text-[11px] font-body font-bold text-muted-foreground uppercase">Notes (optional)</p>
+          <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2}
+            className="w-full px-3 py-2 rounded-xl border border-border bg-background text-sm font-body focus:outline-none resize-none" />
+        </div>
+
+        {error && <p className="text-xs font-body text-destructive">{error}</p>}
+
+        <button onClick={handleSubmit} disabled={saving}
+          className="w-full h-11 rounded-xl surya-gradient text-primary-foreground text-sm font-body font-bold flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50">
+          {saving ? <Loader2 className="size-4 animate-spin" /> : <><ShoppingCart className="size-4" /> Create Purchase Order</>}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export default function PurchaseOrderTab({ branchScope }: { branchScope?: ReceiverBranchScope } = {}) {
+  const { orders, loaded, loading, load, updateStatus, deletePO } = usePurchaseOrderStore();
+  const [showCreate, setShowCreate] = useState(false);
+  const [filterStatus, setFilterStatus] = useState<'all' | POStatus>('all');
+  const [actionError, setActionError] = useState<string | null>(null);
+  const primary_outletStock = useBranchStore((state) => state.stock.PRIMARY_OUTLET);
+  const currentStockFor = (itemName: string) => {
+    if (branchScope !== 'PRIMARY_OUTLET') return null;
+    const row = primary_outletStock.find((item) => item.itemName.toLowerCase() === itemName.toLowerCase());
+    return row ? { quantity: Number(row.availableQuantity ?? row.quantity ?? 0), unit: row.unit || 'pcs' } : null;
+  };
+
+  useEffect(() => { if (!loaded) load(); }, [loaded, load]);
+
+  const handleStatusChange = async (id: string, status: POStatus) => {
+    setActionError(null);
+    const error = await updateStatus(id, status);
+    if (error) setActionError(error);
+  };
+
+  const handleDelete = async (id: string) => {
+    setActionError(null);
+    const error = await deletePO(id);
+    if (error) setActionError(error);
+  };
+
+  const scopedOrders = branchScope
+    ? orders.filter(o => o.branch === branchScope)
+    : orders.filter(o => !o.branch);
+  const filtered = scopedOrders.filter(o => filterStatus === 'all' || o.status === filterStatus);
+  const draftCount    = scopedOrders.filter(o => o.status === 'draft').length;
+  const sentCount     = scopedOrders.filter(o => o.status === 'sent').length;
+  const receivedCount = scopedOrders.filter(o => o.status === 'received').length;
+  const cancelledCount = scopedOrders.filter(o => o.status === 'cancelled').length;
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {[
+          { label: 'Draft',    value: draftCount,    color: draftCount > 0 ? 'text-muted-foreground' : 'text-muted-foreground', bg: '' },
+          { label: 'Sent',     value: sentCount,     color: sentCount > 0 ? 'text-blue-600' : 'text-muted-foreground',          bg: sentCount > 0 ? 'bg-blue-50 border-blue-200' : '' },
+          { label: 'Received', value: receivedCount, color: 'text-emerald-600', bg: receivedCount > 0 ? 'bg-emerald-50 border-emerald-200' : '' },
+          { label: 'Cancelled', value: cancelledCount, color: 'text-red-600', bg: cancelledCount > 0 ? 'bg-red-50 border-red-200' : '' },
+        ].map(s => (
+          <div key={s.label} className={cn('bg-card border border-border rounded-xl p-2.5 text-center', s.bg)}>
+            <p className={cn('font-display text-xl font-bold', s.color)}>{s.value}</p>
+            <p className="text-[9px] font-body text-muted-foreground uppercase font-semibold mt-0.5">{s.label}</p>
+          </div>
+        ))}
+      </div>
+
+      {actionError && (
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">
+          <span>{actionError}</span>
+          <button type="button" onClick={() => setActionError(null)} aria-label="Dismiss purchase order error">
+            <X className="size-4" />
+          </button>
+        </div>
+      )}
+
+      <div className="flex items-center gap-2">
+        <div className="flex gap-1.5 flex-1 overflow-x-auto pb-0.5">
+          {(['all', 'draft', 'sent', 'received', 'cancelled'] as const).map(s => (
+            <button key={s} onClick={() => setFilterStatus(s)}
+              className={cn('shrink-0 text-[11px] font-body font-semibold px-3 py-1.5 rounded-full border transition-all',
+                filterStatus === s ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-muted-foreground')}>
+              {s === 'all' ? 'All' : STATUS_META[s].label}
+            </button>
+          ))}
+        </div>
+        <button onClick={() => setShowCreate(true)}
+          className="size-9 flex items-center justify-center rounded-xl bg-primary text-primary-foreground shrink-0 active:scale-90">
+          <Plus className="size-4" />
+        </button>
+      </div>
+
+      {loading && !loaded ? (
+        <div className="flex justify-center py-12"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
+      ) : filtered.length === 0 ? (
+        <div className="flex flex-col items-center py-16 text-center">
+          <ShoppingCart className="size-10 text-muted-foreground/20 mb-3" />
+          <p className="text-sm font-body text-muted-foreground">No purchase orders yet.</p>
+          <button onClick={() => setShowCreate(true)} className="mt-2 text-xs text-primary underline">Create one now</button>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {filtered.map(po => (
+            <POCard key={po.id} po={po}
+              onStatusChange={(id, status) => { void handleStatusChange(id, status); }}
+              onDelete={(id) => { void handleDelete(id); }}
+              currentStockFor={currentStockFor} />
+          ))}
+        </div>
+      )}
+
+      {showCreate && <CreatePOForm branchScope={branchScope} onClose={() => { setShowCreate(false); load(); }} />}
+    </div>
+  );
+}
