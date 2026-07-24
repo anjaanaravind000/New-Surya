@@ -1,0 +1,1571 @@
+import { useCallback, useEffect, useMemo, useState, type ElementType, type ReactNode } from 'react';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { useOrderStore } from '@/stores/orderStore';
+import { useShallow } from 'zustand/react/shallow';
+import { useBranchStore } from '@/branch/branchStore';
+import { useBranchOpsStore } from '@/branch/branchOpsStore';
+import { useAuthStore } from '@/stores/authStore';
+import { formatCurrency } from '@/lib/utils';
+import { cn } from '@/lib/utils';
+import type { Branch } from '@/branch/types';
+import { BRANCHES, BRANCH_LABELS, BRANCH_COLORS } from '@/branch/types';
+import PrimaryOutletItemsTab from '@/components/admin/PrimaryOutletItemsTab';
+import SecondaryOutletItemsTab from '@/components/admin/SecondaryOutletItemsTab';
+import AdminCreditTab from '@/components/admin/AdminCreditTab';
+import AdminAdvanceTab from '@/components/admin/AdminAdvanceTab';
+import AttendanceSalary from '@/modules/shared/WorkforcePayrollModule';
+import AdminPlanningTab from '@/components/admin/AdminPlanningTab';
+import AdminInvoicesTab from '@/bakery/AdminInvoicesTab';
+import { useBranchLedger } from '@/hooks/useBranchLedger';
+import { useNotificationStore } from '@/bakery/notificationStore';
+import { supabase } from '@/lib/supabase';
+import {
+  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, LineChart,
+  Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from 'recharts';
+import {
+  Activity, AlertTriangle, Banknote, BarChart3, Bell, CalendarClock,
+  CheckCircle2, ChevronDown, ClipboardList, CreditCard, Download,
+  FileSpreadsheet, Filter, History, IndianRupee, Landmark, LayoutDashboard,
+  Lock, Package, PackageSearch, Printer, RefreshCw, Search,
+  ShieldCheck, ShoppingBag, Smartphone, Store, TrendingDown, TrendingUp,
+  Trash2, WalletCards, X,
+} from 'lucide-react';
+
+const CHART_COLORS = ['#2563eb', '#d97706', '#059669', '#7c3aed', '#dc2626', '#0891b2', '#ea580c'];
+const PAYMENT_COLORS = ['#16a34a', '#2563eb', '#7c3aed', '#f97316', '#dc2626'];
+
+// CHANGE 3: Removed 'stock-alerts' from AdminTab union
+type AdminTab = 'public-orders' | 'planning' | 'overview' | 'retail' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'invoices' | 'alerts' | 'complaints' | 'attendance';
+
+type SalesTxn = {
+  id: string; branch: Branch; itemName: string; qty: number; revenue: number;
+  payment: string; soldAt: string; soldBy: string; billNo: string | null;
+};
+
+type ClosureRow = {
+  branch: Branch; openingBalance: number; totalSales: number; cashSales: number;
+  upiSales: number; cardSales: number; creditSales: number; returns: number;
+  netSales: number; expenses: number; purchasePayments: number; bankDeposits: number;
+  closingBalance: number; differenceAmount: number; remarks: string;
+  status: 'Closed' | 'Pending' | 'Review'; closedBy: string; closedAt: string;
+};
+
+// CHANGE 3: Removed 'stock-alerts' nav item
+type PublicOrder = { id: string; order_number: string; customer_name: string; customer_phone: string; customer_address: string; location_pin: string; notes: string | null; amount: number; status: string; payment_id: string | null; items: Array<{name:string;qty:number;price:number;venue:string;unit?:string}>; created_at: string };
+
+const PUBLIC_ORDER_STATUS_OPTIONS = [
+  { value: 'paid', label: 'Payment received' },
+  { value: 'confirmed', label: 'Confirmed' },
+  { value: 'preparing', label: 'Preparing' },
+  { value: 'ready', label: 'Ready' },
+  { value: 'out_for_delivery', label: 'Out for delivery' },
+  { value: 'completed', label: 'Completed' },
+  { value: 'cancelled', label: 'Cancelled' },
+] as const;
+
+const NAV_ITEMS: Array<{ id: AdminTab; label: string; description: string; icon: ElementType; adminOnly?: boolean }> = [
+  { id: 'public-orders', label: 'Online Orders', description: 'Paid landing-page orders from Razorpay', icon: Smartphone, adminOnly: true },
+  { id: 'planning', label: 'Planning', description: 'Plan outlet and custom production items for materials operations', icon: ClipboardList, adminOnly: true },
+  { id: 'overview', label: 'Dashboard Overview', description: 'Business KPIs, charts and reports', icon: LayoutDashboard },
+  { id: 'retail', label: 'Restaurant & Retail Outlet', description: 'Retail sales and payment split', icon: Store },
+  { id: 'branches', label: 'Branch Sales', description: 'Retail, secondary outlet and wholesale performance', icon: BarChart3 },
+  { id: 'items', label: 'Items', description: 'Outlet item and pricing controls', icon: PackageSearch, adminOnly: true },
+  { id: 'daily-closure', label: 'Daily Closure', description: 'Retail and branch closing verification', icon: CalendarClock, adminOnly: true },
+  { id: 'credits', label: 'Credit Pending', description: 'Customer credit and due collection', icon: WalletCards, adminOnly: true },
+  { id: 'advance', label: 'Advance Orders', description: 'Advance bookings and balances', icon: ClipboardList, adminOnly: true },
+  { id: 'stock-disputes', label: 'Stock Disputes', description: 'Incoming stock mismatch approvals', icon: AlertTriangle, adminOnly: true },
+  { id: 'stock-variance', label: 'Stock Variance', description: 'Physical stock count differences from branches', icon: AlertTriangle, adminOnly: true },
+  { id: 'waste', label: 'Waste & Loss', description: 'Waste deductions reported by every branch', icon: Trash2, adminOnly: true },
+  { id: 'audit', label: 'Audit Logs', description: 'Sensitive action history', icon: ShieldCheck, adminOnly: true },
+  { id: 'invoices', label: 'Invoices', description: 'Store invoice review and approval', icon: FileSpreadsheet, adminOnly: true },
+  { id: 'alerts', label: 'Alerts', description: 'Business alerts (no low-stock)', icon: Bell, adminOnly: true },
+  { id: 'complaints', label: 'Complaints', description: 'Branch admin complaints and issues', icon: ClipboardList, adminOnly: true },
+  { id: 'attendance', label: 'Attendance & Payroll', description: 'Staff attendance and salary management', icon: CalendarClock, adminOnly: true },
+];
+
+function todayInput(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function lastWeekInput() { const d = new Date(); d.setDate(d.getDate() - 6); return todayInput(d); }
+function startOfDay(value: string) { const d = value ? new Date(`${value}T00:00:00`) : new Date(0); d.setHours(0,0,0,0); return d; }
+function endOfDay(value: string) { const d = value ? new Date(`${value}T23:59:59`) : new Date('2999-12-31T23:59:59'); d.setHours(23,59,59,999); return d; }
+function inRange(iso: string, fromDate: string, toDate: string) { const t = new Date(iso).getTime(); return t >= startOfDay(fromDate).getTime() && t <= endOfDay(toDate).getTime(); }
+function localDateKey(iso: string) { return todayInput(new Date(iso)); }
+function fmtDate(iso: string) { return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); }
+function fmtDateTime(iso: string) { return new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); }
+function csvDownload(filename: string, rows: Array<Record<string, string | number | null | undefined>>) {
+  const safeRows = rows.length ? rows : [{ Note: 'No records for selected filters' }];
+  const headers = Object.keys(safeRows[0]);
+  const csv = [headers.join(','), ...safeRows.map(row => headers.map(h => `"${String(row[h] ?? '').replace(/"/g, '""')}"`).join(','))].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 0);
+}
+function paymentIncludes(payment: string | null | undefined, key: 'cash' | 'upi' | 'card' | 'credit') {
+  const m = (payment || '').toLowerCase();
+  if (key === 'cash') return m === 'cash' || m.includes('cash');
+  if (key === 'upi') return m === 'upi' || m.includes('upi');
+  if (key === 'card') return m === 'card' || m.includes('card');
+  return m === 'credit' || m.includes('credit');
+}
+function paymentAmount(revenue: number, payment: string | null | undefined, key: 'cash' | 'upi' | 'card' | 'credit') {
+  return paymentIncludes(payment, key) ? revenue : 0;
+}
+
+function Panel({ title, subtitle, action, children, className }: { title: ReactNode; subtitle?: ReactNode; action?: ReactNode; children: ReactNode; className?: string }) {
+  return (
+    <section className={cn('rounded-3xl border border-slate-200 bg-white shadow-sm shadow-slate-200/60 overflow-hidden', className)}>
+      <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <h3 className="font-display text-base font-bold text-slate-950">{title}</h3>
+          {subtitle && <p className="mt-0.5 text-xs text-slate-500">{subtitle}</p>}
+        </div>
+        {action}
+      </div>
+      <div className="p-4">{children}</div>
+    </section>
+  );
+}
+
+function KpiCard({ label, value, sub, icon, tone = 'slate' }: { label: string; value: ReactNode; sub?: ReactNode; icon: ReactNode; tone?: 'slate' | 'green' | 'amber' | 'red' | 'blue' | 'purple' }) {
+  const tones = { slate: 'bg-slate-50 text-slate-700 ring-slate-200', green: 'bg-emerald-50 text-emerald-700 ring-emerald-200', amber: 'bg-amber-50 text-amber-700 ring-amber-200', red: 'bg-red-50 text-red-700 ring-red-200', blue: 'bg-blue-50 text-blue-700 ring-blue-200', purple: 'bg-purple-50 text-purple-700 ring-purple-200' };
+  return (
+    <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm shadow-slate-200/60">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">{label}</p>
+          <div className="mt-2 font-display text-2xl font-black leading-none text-slate-950 tabular-nums">{value}</div>
+          {sub && <p className="mt-2 text-xs text-slate-500">{sub}</p>}
+        </div>
+        <div className={cn('grid size-11 shrink-0 place-items-center rounded-2xl ring-1', tones[tone])}>{icon}</div>
+      </div>
+    </div>
+  );
+}
+
+function Badge({ children, tone = 'slate' }: { children: ReactNode; tone?: 'slate' | 'green' | 'amber' | 'red' | 'blue' | 'purple' }) {
+  const tones = { slate: 'bg-slate-100 text-slate-700', green: 'bg-emerald-100 text-emerald-700', amber: 'bg-amber-100 text-amber-700', red: 'bg-red-100 text-red-700', blue: 'bg-blue-100 text-blue-700', purple: 'bg-purple-100 text-purple-700' };
+  return <span className={cn('inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wide', tones[tone])}>{children}</span>;
+}
+
+function BranchPill({ branch }: { branch: Branch }) {
+  return <span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-black uppercase', BRANCH_COLORS[branch]?.badge)}>{BRANCH_LABELS[branch] ?? branch}</span>;
+}
+
+function EmptyState({ label }: { label: string }) {
+  return (
+    <div className="grid place-items-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 py-10 text-center">
+      <p className="text-sm font-semibold text-slate-500">{label}</p>
+    </div>
+  );
+}
+
+function ChartWrap({ children, minHeight = 260 }: { children: ReactNode; minHeight?: number }) {
+  return <div style={{ minHeight }} className="h-[280px] w-full">{children}</div>;
+}
+
+// CHANGE 4: Date preset component
+const DATE_PRESETS = [
+  { label: 'Today', days: 0 },
+  { label: 'Yesterday', days: -1 },
+  { label: '7 Days', days: 6 },
+  { label: '15 Days', days: 14 },
+  { label: '1 Month', days: 29 },
+] as const;
+
+function DatePresets({ fromDate, toDate, setFromDate, setToDate }: { fromDate: string; toDate: string; setFromDate: (d: string) => void; setToDate: (d: string) => void }) {
+  function applyPreset(days: number) {
+    const today = todayInput();
+    if (days === -1) {
+      const d = new Date(); d.setDate(d.getDate() - 1);
+      const y = todayInput(d);
+      setFromDate(y); setToDate(y);
+    } else {
+      const d = new Date(); d.setDate(d.getDate() - days);
+      setFromDate(todayInput(d)); setToDate(today);
+    }
+  }
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {DATE_PRESETS.map(p => {
+        const today = todayInput();
+        const expectedFrom = p.days === -1
+          ? todayInput(new Date(Date.now() - 86400000))
+          : todayInput(new Date(Date.now() - p.days * 86400000));
+        const expectedTo = p.days === -1 ? expectedFrom : today;
+        const active = fromDate === expectedFrom && toDate === expectedTo;
+        return (
+          <button key={p.label} onClick={() => applyPreset(p.days)}
+            aria-pressed={active}
+            className={cn('rounded-full border px-3 py-1 text-xs font-black transition', active
+              ? 'border-slate-950 bg-slate-950 text-white shadow-sm'
+              : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100')}>
+            {p.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+const ADMIN_BRANCHES: Branch[] = ['Retail', 'SECONDARY_OUTLET', 'PRIMARY_OUTLET', 'Wholesale'];
+
+function BusinessManagementModule() {
+  const { currentUser } = useAuthStore();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const isAdmin = ['admin', 'executive'].includes(currentUser?.role || '');
+  const adminName = currentUser?.displayName || currentUser?.username || 'Admin';
+  const routeTab: AdminTab | null = location.pathname.endsWith('/planning') ? 'planning' : null;
+  const requestedTab = routeTab ?? searchParams.get('tab') as AdminTab | null;
+  const allowedNavItems = useMemo(() => NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin), [isAdmin]);
+  const activeTab: AdminTab = requestedTab && allowedNavItems.some((item) => item.id === requestedTab) ? requestedTab : 'overview';
+  const [publicOrders, setPublicOrders] = useState<PublicOrder[]>([]);
+  const [publicOrdersLoading, setPublicOrdersLoading] = useState(false);
+  const [publicOrderUpdating, setPublicOrderUpdating] = useState<string | null>(null);
+  const [fromDate, setFromDate] = useState(lastWeekInput());
+  const [toDate, setToDate] = useState(todayInput());
+  const [closureDate, setClosureDate] = useState(todayInput());
+  const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
+  const [itemsSection, setItemsSection] = useState<'primary_outlet' | 'secondary_outlet'>('primary_outlet');
+  // Audit tab filters
+  const [auditSearch, setAuditSearch] = useState('');
+  const [auditBranchFilter, setAuditBranchFilter] = useState<Branch | 'all'>('all');
+
+  const { orders, polling, startPolling, stopPolling } = useOrderStore(
+    useShallow(s => ({ orders: s.orders, polling: s.polling, startPolling: s.startPolling, stopPolling: s.stopPolling }))
+  );
+  const { stock, sales, incoming, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches, confirmIncoming } = useBranchStore();
+  const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, auditLogs, notifications, updateNotificationStatus, complaints, updateComplaintStatus } = useBranchOpsStore();
+  const { notifications: adminNotifications, load: loadAdminNotifications, markRead } = useNotificationStore();
+  const adminLedger = useBranchLedger(fromDate, toDate, ['SECONDARY_OUTLET', 'PRIMARY_OUTLET', 'Wholesale']);
+  const selectTab = (next: AdminTab) => {
+    setSearchParams(next === 'overview' ? {} : { tab: next });
+  };
+
+  useEffect(() => { startPolling(90); return () => stopPolling(); }, [startPolling, stopPolling]);
+  useEffect(() => { BRANCHES.forEach(branch => void fetchBranchData(branch)); void fetchStockMismatches(); }, [fetchBranchData, fetchStockMismatches]);
+  // Branch waste (dump/damage/transfer-out) is shared across Ordering & Receiving, Outlet Management,
+  // Secondary Outlet Management, Executive, and here via the `branch_waste_logs` Supabase table.
+  // This used to read a local-only branchOpsStore that never synced across devices.
+  const [wasteLogs, setWasteLogs] = useState<Array<{
+    id: string; branch: string; logType: string; itemName: string;
+    quantity: number; unit: string; reason: string; verifiedBy: string; createdAt: string;
+  }>>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from('branch_waste_logs')
+        .select('id,branch,log_type,item_name,quantity,unit,reason,verified_by,created_at')
+        .gte('created_at', `${fromDate}T00:00:00`)
+        .lte('created_at', `${toDate}T23:59:59`)
+        .order('created_at', { ascending: false })
+        .limit(2000);
+      if (cancelled || error || !data) return;
+      setWasteLogs(data.map((d: any) => ({
+        id: d.id,
+        branch: d.branch,
+        logType: d.log_type,
+        itemName: d.item_name,
+        quantity: Number(d.quantity || 0),
+        unit: d.unit,
+        reason: d.reason || '',
+        verifiedBy: d.verified_by || '',
+        createdAt: d.created_at,
+      })));
+    })();
+    return () => { cancelled = true; };
+  }, [fromDate, toDate]);
+  useEffect(() => { void loadAdminNotifications(); }, [loadAdminNotifications]);
+  const loadPublicOrders = useCallback(async () => {
+    setPublicOrdersLoading(true);
+    const { data, error } = await supabase.rpc('list_public_orders_secure', {
+      p_limit: 250,
+      p_offset: 0,
+      p_include_full_contact: true,
+      p_purpose: 'order_fulfilment',
+    });
+    if (error) {
+      setPublicOrdersLoading(false);
+      throw error;
+    }
+    setPublicOrders(((data ?? []) as PublicOrder[]).filter((order) => !['payment_pending', 'payment_failed'].includes(order.status)));
+    setPublicOrdersLoading(false);
+  }, []);
+
+  const updatePublicOrderStatus = useCallback(async (orderId: string, status: string) => {
+    setPublicOrderUpdating(orderId);
+    const { error } = await supabase.rpc('update_public_order_status_secure', {
+      p_order_id: orderId,
+      p_status: status,
+    });
+    if (error) {
+      setPublicOrderUpdating(null);
+      alert(error.message || 'Unable to update online order status.');
+      return;
+    }
+    await loadPublicOrders();
+    setPublicOrderUpdating(null);
+  }, [loadPublicOrders]);
+
+  useEffect(() => { void loadPublicOrders(); }, [loadPublicOrders]);
+  useEffect(() => {
+    if (requestedTab === 'items') navigate('/bakery/items', { replace: true });
+  }, [navigate, requestedTab]);
+  useEffect(() => {
+    if (!requestedTab) return;
+    const allowed = allowedNavItems.some((item) => item.id === requestedTab);
+    if (!allowed) {
+      setSearchParams({}, { replace: true });
+    }
+  }, [allowedNavItems, requestedTab, setSearchParams]);
+
+  const rangeLabel = fromDate === toDate
+    ? new Date(`${fromDate}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+    : `${new Date(`${fromDate}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(`${toDate}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
+
+  const retailOrdersInRange = useMemo(() => orders.filter(o => inRange(o.createdAt, fromDate, toDate)), [orders, fromDate, toDate]);
+  const retailServedOrders = useMemo(() => retailOrdersInRange.filter(o => o.status === 'served'), [retailOrdersInRange]);
+  const retailCancelledOrders = useMemo(() => retailOrdersInRange.filter(o => o.status === 'cancelled'), [retailOrdersInRange]);
+  const retailSalesTotal = useMemo(() => retailServedOrders.reduce((sum, o) => sum + Number(o.total || 0), 0), [retailServedOrders]);
+
+  const retailPaymentSplit = useMemo(() => {
+    const split = { cash: 0, upi: 0, card: 0, credit: 0 };
+    retailServedOrders.forEach(o => {
+      if (o.paymentType === 'cash') split.cash += Number(o.total || 0);
+      else if (o.paymentType === 'upi') split.upi += Number(o.total || 0);
+      else if (o.paymentType === 'card') split.card += Number(o.total || 0);
+      else if (o.paymentType === 'unpaid') split.credit += Number(o.total || 0);
+      else if (o.paymentType === 'part_payment' && o.paymentBreakdown) {
+        split.cash += Number(o.paymentBreakdown.cash || 0);
+        split.upi += Number(o.paymentBreakdown.upi || 0);
+        split.card += Number(o.paymentBreakdown.card || 0);
+      }
+    });
+    return split;
+  }, [retailServedOrders]);
+
+  const branchTransactions = useMemo<SalesTxn[]>(() => {
+    const result: SalesTxn[] = [];
+    BRANCHES.filter(b => b !== 'Retail').forEach(branch => {
+      (sales[branch] || []).filter(s => inRange(s.soldAt, fromDate, toDate)).forEach(s => {
+        result.push({ id: s.id, branch, itemName: s.itemName, qty: Number(s.quantitySold || 0), revenue: Number(s.unitPrice || 0) * Number(s.quantitySold || 0), payment: s.paymentMethod || '-', soldAt: s.soldAt, soldBy: s.soldBy, billNo: s.billNo });
+      });
+    });
+    return result.sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime());
+  }, [sales, fromDate, toDate]);
+
+  const opsBillsInRange = useMemo(() => bills.filter(b => inRange(b.createdAt, fromDate, toDate)), [bills, fromDate, toDate]);
+  const branchRevenueFromSales = useMemo(() => branchTransactions.reduce((sum, t) => sum + t.revenue, 0), [branchTransactions]);
+  const opsBillRevenue = useMemo(() => opsBillsInRange.reduce((sum, b) => sum + Number(b.total || 0), 0), [opsBillsInRange]);
+  const billedNumbers = new Set(opsBillsInRange.map((bill) => bill.billNo));
+  const legacyOnlyRevenue = branchTransactions
+    .filter((transaction) => !transaction.billNo || !billedNumbers.has(transaction.billNo))
+    .reduce((sum, transaction) => sum + transaction.revenue, 0);
+  const branchSalesTotal = opsBillRevenue + legacyOnlyRevenue;
+  const businessTotalSales = retailSalesTotal + branchSalesTotal;
+
+  const branchSalesByBranch = useMemo(() => {
+    return BRANCHES.map(branch => {
+      if (branch === 'Retail') return { branch, label: 'Retail', sales: retailSalesTotal, orders: retailServedOrders.length, returns: 0 };
+      const txns = branchTransactions.filter(t => t.branch === branch);
+      const ops = opsBillsInRange.filter(b => b.branch === branch && b.status !== 'Returned');
+      const representedBills = new Set(ops.map((bill) => bill.billNo).filter(Boolean));
+      const legacy = txns.filter((transaction) => !transaction.billNo || !representedBills.has(transaction.billNo));
+      const revenue = ops.reduce((sum, bill) => sum + Number(bill.total || 0), 0) + legacy.reduce((sum, transaction) => sum + transaction.revenue, 0);
+      const legacyOrders = new Set(legacy.map((transaction) => transaction.billNo || transaction.id)).size;
+      return { branch, label: branch, sales: revenue, orders: ops.length + legacyOrders, returns: returns.filter(r => r.branch === branch && inRange(r.createdAt, fromDate, toDate)).reduce((sum, r) => sum + Number(r.total || 0), 0) };
+    });
+  }, [retailSalesTotal, retailServedOrders.length, branchTransactions, opsBillsInRange, returns, fromDate, toDate]);
+
+  // CHANGE 5: filtered branch sales for overview
+  const filteredBranchSalesByBranch = useMemo(() => branchFilter === 'all' ? branchSalesByBranch : branchSalesByBranch.filter(b => b.branch === branchFilter), [branchSalesByBranch, branchFilter]);
+
+  const dailySalesTrend = useMemo(() => {
+    const days: Record<string, { date: string; Retail: number; PRIMARY_OUTLET: number; SECONDARY_OUTLET: number; Wholesale: number; Total: number }> = {};
+    for (let d = new Date(`${fromDate}T00:00:00`); d <= endOfDay(toDate); d.setDate(d.getDate() + 1)) {
+      const key = todayInput(d);
+      days[key] = { date: d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }), Retail: 0, PRIMARY_OUTLET: 0, SECONDARY_OUTLET: 0, Wholesale: 0, Total: 0 };
+    }
+    retailServedOrders.forEach(o => { const key = localDateKey(o.createdAt); if (!days[key]) return; days[key].Retail += Number(o.total || 0); days[key].Total += Number(o.total || 0); });
+    const representedBills = new Set(opsBillsInRange.map((bill) => bill.billNo).filter(Boolean));
+    opsBillsInRange.filter((bill) => bill.branch !== 'Retail' && bill.status !== 'Returned').forEach((bill) => {
+      const key = localDateKey(bill.createdAt); if (!days[key]) return;
+      days[key][bill.branch] += Number(bill.total || 0); days[key].Total += Number(bill.total || 0);
+    });
+    branchTransactions.filter((transaction) => !transaction.billNo || !representedBills.has(transaction.billNo)).forEach(t => { const key = localDateKey(t.soldAt); if (!days[key] || t.branch === 'Retail') return; days[key][t.branch] += t.revenue; days[key].Total += t.revenue; });
+    return Object.values(days);
+  }, [fromDate, toDate, retailServedOrders, branchTransactions, opsBillsInRange]);
+
+  const filteredDailySalesTrend = useMemo(() => {
+    if (branchFilter === 'all') return dailySalesTrend;
+    return dailySalesTrend.map(d => ({ ...d, Total: d[branchFilter as keyof typeof d] as number }));
+  }, [dailySalesTrend, branchFilter]);
+
+  const paymentSplit = useMemo(() => {
+    const totals = { cash: retailPaymentSplit.cash, upi: retailPaymentSplit.upi, card: retailPaymentSplit.card, credit: retailPaymentSplit.credit };
+    opsBillsInRange.forEach(b => {
+      if (b.paymentMode === 'cash') totals.cash += Number(b.total || 0);
+      else if (b.paymentMode === 'upi') totals.upi += Number(b.total || 0);
+      else if (b.paymentMode === 'card') totals.card += Number(b.total || 0);
+      else if (b.paymentMode === 'credit') totals.credit += Number(b.total || 0);
+      else if (b.paymentMode === 'split') { totals.cash += Number(b.split?.cash || 0); totals.upi += Number(b.split?.upi || 0); totals.card += Number(b.split?.card || 0); }
+    });
+    const representedBills = new Set(opsBillsInRange.map((bill) => bill.billNo).filter(Boolean));
+    branchTransactions.filter((transaction) => !transaction.billNo || !representedBills.has(transaction.billNo)).forEach(t => {
+      if (paymentIncludes(t.payment, 'cash')) totals.cash += t.revenue;
+      else if (paymentIncludes(t.payment, 'upi')) totals.upi += t.revenue;
+      else if (paymentIncludes(t.payment, 'card')) totals.card += t.revenue;
+      else if (paymentIncludes(t.payment, 'credit')) totals.credit += t.revenue;
+    });
+    return [{ name: 'Cash', value: totals.cash }, { name: 'UPI', value: totals.upi }, { name: 'Card', value: totals.card }, { name: 'Credit', value: totals.credit }].filter(item => item.value > 0);
+  }, [retailPaymentSplit, opsBillsInRange, branchTransactions]);
+
+  const topSellingItems = useMemo(() => {
+    const map = new Map<string, { item: string; qty: number; revenue: number }>();
+    const filteredRetailOrders = branchFilter === 'all' || branchFilter === 'Retail' ? retailServedOrders : [];
+    const filteredTxns = branchFilter === 'all' ? branchTransactions : branchTransactions.filter(t => t.branch === branchFilter);
+    filteredRetailOrders.forEach(o => o.items.forEach(ci => {
+      const key = ci.menuItem.name;
+      const existing = map.get(key) || { item: key, qty: 0, revenue: 0 };
+      existing.qty += Number(ci.quantity || 0); existing.revenue += Number(ci.menuItem.price || 0) * Number(ci.quantity || 0);
+      map.set(key, existing);
+    }));
+    filteredTxns.forEach(t => {
+      const existing = map.get(t.itemName) || { item: t.itemName, qty: 0, revenue: 0 };
+      existing.qty += t.qty; existing.revenue += t.revenue; map.set(t.itemName, existing);
+    });
+    return [...map.values()].sort((a, b) => b.revenue - a.revenue).slice(0, 10).map(item => ({ ...item, short: item.item.length > 16 ? `${item.item.slice(0, 16)}…` : item.item }));
+  }, [retailServedOrders, branchTransactions, branchFilter]);
+
+  // CHANGE 3: stockAlerts kept for OverviewTab KpiCard only (no StockAlertsTab)
+  const stockAlerts = useMemo(() => {
+    let count = 0;
+    BRANCHES.filter(b => b !== 'Retail').forEach(branch => {
+      (stock[branch] || []).forEach(s => { if (Number(s.quantity || 0) <= 0) count++; });
+    });
+    return count;
+  }, [stock]);
+
+  const creditPendingTotal = useMemo(() => BRANCHES.reduce((sum, branch) => sum + (creditSales[branch] || []).filter(c => c.status !== 'settled').reduce((s, c) => s + Number(c.creditAmount || 0), 0), 0), [creditSales]);
+  const purchaseTotal = useMemo(() => purchases.filter(p => inRange(p.createdAt, fromDate, toDate)).reduce((sum, p) => sum + Number(p.total || 0), 0), [purchases, fromDate, toDate]);
+  const expenseTotal = useMemo(() => cashMovements.filter(m => inRange(m.dateTime, fromDate, toDate) && m.direction === 'out' && m.purpose.toLowerCase().includes('expense')).reduce((sum, m) => sum + Number(m.amount || 0), 0), [cashMovements, fromDate, toDate]);
+
+  const balanceSummary = useMemo(() => {
+    const totals = { cash: 0, upi: 0, card: 0, bank: 0 };
+    cashMovements.filter((movement) => inRange(movement.dateTime, fromDate, toDate)).forEach(m => {
+      if (!['cash', 'upi', 'card', 'bank'].includes(m.paymentMode)) return;
+      const key = m.paymentMode as keyof typeof totals;
+      totals[key] += m.direction === 'in' ? Number(m.amount || 0) : -Number(m.amount || 0);
+    });
+    bankDeposits.filter((deposit) => inRange(deposit.createdAt, fromDate, toDate)).forEach(d => {
+      const amount = Number(d.amount || 0); totals.bank += amount;
+      if (d.paymentMode === 'Cash Deposit') totals.cash -= amount;
+      if (d.paymentMode === 'UPI Transfer') totals.upi -= amount;
+      if (d.paymentMode === 'Card Settlement') totals.card -= amount;
+    });
+    return totals;
+  }, [cashMovements, bankDeposits, fromDate, toDate]);
+
+  const closureRows = useMemo<ClosureRow[]>(() => {
+    return BRANCHES.map(branch => {
+      const ledger = adminLedger.closureByBranchDate.get(`${branch}:${closureDate}`);
+      const savedLedgerClosure = adminLedger.savedClosureByBranchDate.get(`${branch}:${closureDate}`);
+      if (branch !== 'Retail' && ledger) {
+        const openingBalance = Number(savedLedgerClosure?.opening_cash || 0);
+        const totalSales = Math.max(
+          0,
+          adminLedger.toNumber(ledger.sales_total)
+            - adminLedger.toNumber(ledger.advance_collected)
+            - adminLedger.toNumber(ledger.advance_balance_collected),
+        );
+        const cashSales = adminLedger.toNumber(ledger.cash_total);
+        const upiSales = adminLedger.toNumber(ledger.upi_total);
+        const cardSales = adminLedger.toNumber(ledger.card_total);
+        const creditSalesDay = adminLedger.toNumber(ledger.credit_billed);
+        const returnsDay = adminLedger.toNumber(savedLedgerClosure?.refunds || 0);
+        const expensesDay = adminLedger.toNumber(savedLedgerClosure?.expenses || 0);
+        const closingBalance = savedLedgerClosure ? adminLedger.toNumber(savedLedgerClosure.actual_cash) : openingBalance + cashSales - returnsDay - expensesDay;
+        const differenceAmount = savedLedgerClosure ? adminLedger.toNumber(savedLedgerClosure.difference) : 0;
+        const status: ClosureRow['status'] = savedLedgerClosure ? (Math.abs(differenceAmount) >= 10 ? 'Review' : 'Closed') : 'Pending';
+        return {
+          branch,
+          openingBalance,
+          totalSales,
+          cashSales,
+          upiSales,
+          cardSales,
+          creditSales: creditSalesDay,
+          returns: returnsDay,
+          netSales: Math.max(0, totalSales - returnsDay),
+          expenses: expensesDay,
+          purchasePayments: adminLedger.toNumber(savedLedgerClosure?.purchase_payments || 0),
+          bankDeposits: adminLedger.toNumber(savedLedgerClosure?.bank_deposits || 0),
+          closingBalance,
+          differenceAmount,
+          remarks: savedLedgerClosure?.notes || (savedLedgerClosure ? 'Closed and verified from Supabase' : 'Pending branch closure'),
+          status,
+          closedBy: savedLedgerClosure?.cashier || '-',
+          closedAt: savedLedgerClosure ? fmtDateTime(savedLedgerClosure.created_at) : '-',
+        };
+      }
+      const closureRecords = cashierClosures.filter(c => c.branch === branch && localDateKey(c.createdAt) === closureDate);
+      const latestClosure = closureRecords[0] || null;
+      const txns = branch === 'Retail' ? [] : branchTransactions.filter(t => t.branch === branch && localDateKey(t.soldAt) === closureDate);
+      const opsBills = opsBillsInRange.filter(b => b.branch === branch && localDateKey(b.createdAt) === closureDate);
+      const retailDayOrders = branch === 'Retail' ? orders.filter(o => localDateKey(o.createdAt) === closureDate && o.status === 'served') : [];
+      const representedBills = new Set(opsBills.map((bill) => bill.billNo).filter(Boolean));
+      const legacyTxns = txns.filter((transaction) => !transaction.billNo || !representedBills.has(transaction.billNo));
+      const totalSales = branch === 'Retail' ? retailDayOrders.reduce((sum, o) => sum + Number(o.total || 0), 0) : opsBills.reduce((sum, b) => sum + Number(b.total || 0), 0) + legacyTxns.reduce((sum, t) => sum + t.revenue, 0);
+      const cashSales = branch === 'Retail' ? retailDayOrders.reduce((sum, o) => sum + (o.paymentType === 'part_payment' ? Number(o.paymentBreakdown?.cash || 0) : o.paymentType === 'cash' ? Number(o.total || 0) : 0), 0) : opsBills.reduce((sum, b) => sum + (b.paymentMode === 'cash' ? Number(b.total || 0) : b.paymentMode === 'split' ? Number(b.split?.cash || 0) : 0), 0) + legacyTxns.reduce((sum, t) => sum + paymentAmount(t.revenue, t.payment, 'cash'), 0);
+      const upiSales = branch === 'Retail' ? retailDayOrders.reduce((sum, o) => sum + (o.paymentType === 'part_payment' ? Number(o.paymentBreakdown?.upi || 0) : o.paymentType === 'upi' ? Number(o.total || 0) : 0), 0) : opsBills.reduce((sum, b) => sum + (b.paymentMode === 'upi' ? Number(b.total || 0) : b.paymentMode === 'split' ? Number(b.split?.upi || 0) : 0), 0) + legacyTxns.reduce((sum, t) => sum + paymentAmount(t.revenue, t.payment, 'upi'), 0);
+      const cardSales = branch === 'Retail' ? retailDayOrders.reduce((sum, o) => sum + (o.paymentType === 'part_payment' ? Number(o.paymentBreakdown?.card || 0) : o.paymentType === 'card' ? Number(o.total || 0) : 0), 0) : opsBills.reduce((sum, b) => sum + (b.paymentMode === 'card' ? Number(b.total || 0) : b.paymentMode === 'split' ? Number(b.split?.card || 0) : 0), 0) + legacyTxns.reduce((sum, t) => sum + paymentAmount(t.revenue, t.payment, 'card'), 0);
+      const creditSalesDay = branch === 'Retail' ? retailDayOrders.reduce((sum, o) => sum + (o.paymentType === 'unpaid' ? Number(o.total || 0) : 0), 0) : opsBills.reduce((sum, b) => sum + (b.paymentMode === 'credit' ? Number(b.total || 0) : 0), 0) + legacyTxns.reduce((sum, t) => sum + paymentAmount(t.revenue, t.payment, 'credit'), 0);
+      const returnsDay = returns.filter(r => r.branch === branch && localDateKey(r.createdAt) === closureDate).reduce((sum, r) => sum + Number(r.total || 0), 0);
+      const expensesDay = cashMovements.filter(m => m.branch === branch && localDateKey(m.dateTime) === closureDate && m.direction === 'out' && m.purpose.toLowerCase().includes('expense')).reduce((sum, m) => sum + Number(m.amount || 0), 0);
+      const paymentsDay = purchasePayments.filter(p => p.branch === branch && localDateKey(p.createdAt) === closureDate).reduce((sum, p) => sum + Number(p.amount || 0), 0);
+      const depositsDay = bankDeposits.filter(d => d.branch === branch && localDateKey(d.createdAt) === closureDate).reduce((sum, d) => sum + Number(d.amount || 0), 0);
+      const previousClosure = cashierClosures.filter(c => c.branch === branch && localDateKey(c.createdAt) < closureDate).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+      const openingBalance = Number(previousClosure?.closingCash || 0);
+      const closingBalance = latestClosure ? Number(latestClosure.closingCash || 0) : openingBalance + cashSales - returnsDay - expensesDay - paymentsDay - depositsDay;
+      const differenceAmount = latestClosure ? Number(latestClosure.difference || 0) : 0;
+      // CHANGE 9b: improved status badge logic
+      const status: ClosureRow['status'] = latestClosure ? (Math.abs(differenceAmount) >= 10 ? 'Review' : 'Closed') : 'Pending';
+      return { branch, openingBalance, totalSales, cashSales, upiSales, cardSales, creditSales: creditSalesDay, returns: returnsDay, netSales: totalSales - returnsDay, expenses: expensesDay, purchasePayments: paymentsDay, bankDeposits: depositsDay, closingBalance, differenceAmount, remarks: latestClosure?.notes || (latestClosure ? 'Closed and verified' : 'Pending branch closure'), status, closedBy: latestClosure?.cashier || '-', closedAt: latestClosure ? fmtDateTime(latestClosure.createdAt) : '-' };
+    });
+  }, [adminLedger, cashierClosures, branchTransactions, opsBillsInRange, orders, returns, cashMovements, purchasePayments, bankDeposits, closureDate]);
+
+  const closureStatusChart = useMemo(() => [
+    { status: 'Closed', count: closureRows.filter(r => r.status === 'Closed').length },
+    { status: 'Review', count: closureRows.filter(r => r.status === 'Review').length },
+    { status: 'Pending', count: closureRows.filter(r => r.status === 'Pending').length },
+  ], [closureRows]);
+  const filteredClosureRows = useMemo(() => closureRows.filter(row => branchFilter === 'all' || row.branch === branchFilter), [closureRows, branchFilter]);
+
+  // CHANGE 9d: Closure totals summary
+  const closureTotals = useMemo(() => ({
+    sales: filteredClosureRows.reduce((s, r) => s + r.totalSales, 0),
+    cash: filteredClosureRows.reduce((s, r) => s + r.cashSales, 0),
+    upi: filteredClosureRows.reduce((s, r) => s + r.upiSales, 0),
+    card: filteredClosureRows.reduce((s, r) => s + r.cardSales, 0),
+    credit: filteredClosureRows.reduce((s, r) => s + r.creditSales, 0),
+    diff: filteredClosureRows.reduce((s, r) => s + Math.abs(r.differenceAmount), 0),
+  }), [filteredClosureRows]);
+
+  const exportDailyClosure = () => {
+    csvDownload(`Admin_DailyClosure_${closureDate}.csv`, filteredClosureRows.map(r => ({
+      Branch: BRANCH_LABELS[r.branch], 'Opening Balance': r.openingBalance, 'Total Sales': r.totalSales,
+      'Cash Sales': r.cashSales, 'UPI Sales': r.upiSales, 'Card Sales': r.cardSales, 'Credit Sales': r.creditSales,
+      Returns: r.returns, 'Net Sales': r.netSales, Expenses: r.expenses, 'Purchase Payments': r.purchasePayments,
+      'Bank Deposits': r.bankDeposits, 'Closing Balance': r.closingBalance, Difference: r.differenceAmount,
+      Remarks: r.remarks, Status: r.status, 'Closed By': r.closedBy, 'Closed At': r.closedAt,
+    })));
+  };
+
+  const printDailyClosure = () => {
+    const rows = filteredClosureRows.map(r => `<tr><td>${BRANCH_LABELS[r.branch]}</td><td>${r.status}</td><td>₹${r.openingBalance.toFixed(2)}</td><td>₹${r.totalSales.toFixed(2)}</td><td>₹${r.cashSales.toFixed(2)}</td><td>₹${r.upiSales.toFixed(2)}</td><td>₹${r.cardSales.toFixed(2)}</td><td>₹${r.creditSales.toFixed(2)}</td><td>₹${r.returns.toFixed(2)}</td><td>₹${r.purchasePayments.toFixed(2)}</td><td>₹${r.bankDeposits.toFixed(2)}</td><td>₹${r.closingBalance.toFixed(2)}</td><td>₹${r.differenceAmount.toFixed(2)}</td><td>${r.closedBy}</td><td>${r.remarks}</td></tr>`).join('');
+    const html = `<!doctype html><html><head><title>Daily Closure ${closureDate}</title><style>@page{size:A4 landscape;margin:9mm}*{box-sizing:border-box}body{margin:0;background:#f8fafc;color:#111827;font-family:Arial,sans-serif;font-size:12px}body:before{content:"";display:block;height:12px;background:linear-gradient(90deg,#f97316,#059669,#111827)}main{background:#fff;min-height:100vh;padding:24px}.hero{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:18px;border-bottom:2px solid #111827;padding-bottom:14px}.stamp{display:inline-block;border-radius:999px;background:#fff7ed;color:#c2410c;padding:7px 12px;font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.12em}h1{font-size:24px;line-height:1.05;margin:7px 0 0;font-weight:900}.muted{color:#64748b;font-size:12px;font-weight:700}table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid #e2e8f0;border-radius:16px;overflow:hidden}th,td{border-bottom:1px solid #e2e8f0;padding:9px 10px;font-size:12px;text-align:left;vertical-align:top}th{background:#f1f5f9;color:#475569;font-size:10px;text-transform:uppercase;letter-spacing:.08em;font-weight:900}tr:nth-child(even) td{background:#f8fafc}tr:last-child td{border-bottom:0}@media print{body{background:#fff;print-color-adjust:exact;-webkit-print-color-adjust:exact}main{padding:16px}tr{break-inside:avoid}button{display:none}}</style></head><body><main><div class="hero"><div><div class="stamp">Admin Report</div><h1>Daily Closure Verification</h1></div><p class="muted">Date: ${closureDate}<br/>Generated ${new Date().toLocaleString('en-IN')}</p></div><table><thead><tr><th>Branch</th><th>Status</th><th>Opening</th><th>Total Sales</th><th>Cash</th><th>UPI</th><th>Card</th><th>Credit</th><th>Returns</th><th>Purchase Pay.</th><th>Bank Deposit</th><th>Closing</th><th>Difference</th><th>Closed By</th><th>Remarks</th></tr></thead><tbody>${rows}</tbody></table><script>window.onload=()=>window.print()</script></main></body></html>`;
+    const win = window.open('', '_blank', 'width=1200,height=800');
+    if (win) { win.document.write(html); win.document.close(); }
+  };
+
+  // CHANGE 12: Filtered audit logs
+  const filteredAuditLogs = useMemo(() => {
+    const q = auditSearch.trim().toLowerCase();
+    return auditLogs
+      .filter(l => auditBranchFilter === 'all' || l.branch === auditBranchFilter)
+      .filter(l => inRange(l.createdAt, fromDate, toDate))
+      .filter(l => !q || `${l.action} ${l.user} ${l.branch}`.toLowerCase().includes(q));
+  }, [auditLogs, auditBranchFilter, fromDate, toDate, auditSearch]);
+
+  const rangeControls = (
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+      <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+        From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+      </label>
+      <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+        To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+      </label>
+      <select value={branchFilter} onChange={e => setBranchFilter(e.target.value as Branch | 'all')} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-900 outline-none">
+        <option value="all">All branches</option>
+        {BRANCHES.map(branch => <option key={branch} value={branch}>{BRANCH_LABELS[branch]}</option>)}
+      </select>
+    </div>
+  );
+
+  // CHANGE 14: Removed top KPI grid from OverviewTab. CHANGE 4/5: Added date presets + branch filter + Excel download
+  const overviewPaymentSplit = useMemo(() => {
+    const isAll = branchFilter === 'all';
+    const isRetail = branchFilter === 'Retail';
+    const totals = { cash: 0, upi: 0, card: 0, credit: 0 };
+    if (isAll || isRetail) {
+      totals.cash += retailPaymentSplit.cash; totals.upi += retailPaymentSplit.upi;
+      totals.card += retailPaymentSplit.card; totals.credit += retailPaymentSplit.credit;
+    }
+    if (isAll || !isRetail) {
+      const filteredBills = branchFilter === 'all' ? opsBillsInRange : opsBillsInRange.filter(b => b.branch === branchFilter);
+      filteredBills.forEach(b => {
+        if (b.paymentMode === 'cash') totals.cash += Number(b.total || 0);
+        else if (b.paymentMode === 'upi') totals.upi += Number(b.total || 0);
+        else if (b.paymentMode === 'card') totals.card += Number(b.total || 0);
+        else if (b.paymentMode === 'credit') totals.credit += Number(b.total || 0);
+        else if (b.paymentMode === 'split') { totals.cash += Number(b.split?.cash || 0); totals.upi += Number(b.split?.upi || 0); totals.card += Number(b.split?.card || 0); }
+      });
+      const representedBills = new Set(filteredBills.map((bill) => bill.billNo).filter(Boolean));
+      const filteredTxns = (branchFilter === 'all' ? branchTransactions : branchTransactions.filter(t => t.branch === branchFilter))
+        .filter((transaction) => !transaction.billNo || !representedBills.has(transaction.billNo));
+      filteredTxns.forEach(t => {
+        if (paymentIncludes(t.payment, 'cash')) totals.cash += t.revenue;
+        else if (paymentIncludes(t.payment, 'upi')) totals.upi += t.revenue;
+        else if (paymentIncludes(t.payment, 'card')) totals.card += t.revenue;
+        else if (paymentIncludes(t.payment, 'credit')) totals.credit += t.revenue;
+      });
+    }
+    return [{ name: 'Cash', value: totals.cash }, { name: 'UPI', value: totals.upi }, { name: 'Card', value: totals.card }, { name: 'Credit', value: totals.credit }].filter(item => item.value > 0);
+  }, [branchFilter, retailPaymentSplit, opsBillsInRange, branchTransactions]);
+
+  const OverviewTab = (
+    <div className="space-y-5">
+      {/* TOP BAR: date presets + branch filter + excel */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+        <DatePresets fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} />
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <select value={branchFilter} onChange={e => setBranchFilter(e.target.value as Branch | 'all')} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-900 outline-none">
+            <option value="all">All branches</option>
+            {BRANCHES.map(branch => <option key={branch} value={branch}>{BRANCH_LABELS[branch]}</option>)}
+          </select>
+          <button onClick={() => csvDownload(`Admin_Overview_${fromDate}_${toDate}.csv`, filteredBranchSalesByBranch.map(r => ({ Branch: r.label, Sales: r.sales, Transactions: r.orders, Returns: r.returns, 'Date From': fromDate, 'Date To': toDate })))}
+            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+            <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+        </div>
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-[1.4fr_0.9fr]">
+        <Panel title="Branch-wise Sales Comparison" subtitle="Retail, secondary outlet and wholesale revenue for selected range">
+          <ChartWrap>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={filteredBranchSalesByBranch}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} width={72} tickFormatter={v => `₹${Number(v) / 1000}k`} />
+                <Tooltip formatter={value => formatCurrency(Number(value))} />
+                <Bar dataKey="sales" radius={[10, 10, 0, 0]}>
+                  {filteredBranchSalesByBranch.map((_, index) => <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartWrap>
+        </Panel>
+
+        <Panel title="Payment Mode Split" subtitle={`Cash, UPI, card and credit mix${branchFilter !== 'all' ? ` — ${BRANCH_LABELS[branchFilter]}` : ' — All branches'}`}>
+          {overviewPaymentSplit.length === 0 ? <EmptyState label="No payment data in selected range." /> : (
+            <ChartWrap>
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={overviewPaymentSplit} dataKey="value" nameKey="name" innerRadius={55} outerRadius={95} paddingAngle={4}>
+                    {overviewPaymentSplit.map((_, index) => <Cell key={index} fill={PAYMENT_COLORS[index % PAYMENT_COLORS.length]} />)}
+                  </Pie>
+                  <Tooltip formatter={value => formatCurrency(Number(value))} />
+                </PieChart>
+              </ResponsiveContainer>
+            </ChartWrap>
+          )}
+          <div className="grid grid-cols-2 gap-2">
+            {overviewPaymentSplit.map((row, index) => (
+              <div key={row.name} className="rounded-2xl bg-slate-50 p-3">
+                <div className="flex items-center gap-2"><span className="size-2 rounded-full" style={{ background: PAYMENT_COLORS[index % PAYMENT_COLORS.length] }} /><p className="text-xs font-black text-slate-700">{row.name}</p></div>
+                <p className="mt-1 text-sm font-black text-slate-950">{formatCurrency(row.value)}</p>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-2">
+        <Panel title="Daily Sales Trend" subtitle="Trend helps identify slow days and peak days">
+          <ChartWrap>
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={filteredDailySalesTrend}>
+                <defs><linearGradient id="totalSalesFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#2563eb" stopOpacity={0.3} /><stop offset="95%" stopColor="#2563eb" stopOpacity={0} /></linearGradient></defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} width={72} tickFormatter={v => `₹${Number(v) / 1000}k`} />
+                <Tooltip formatter={value => formatCurrency(Number(value))} />
+                <Area type="monotone" dataKey="Total" stroke="#2563eb" fill="url(#totalSalesFill)" strokeWidth={3} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </ChartWrap>
+        </Panel>
+
+        <Panel title="Top-selling Items" subtitle="Highest revenue items across retail and outlet operations">
+          {topSellingItems.length === 0 ? <EmptyState label="No sold items for selected range." /> : (
+            <ChartWrap>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={topSellingItems.slice(0, 8)} layout="vertical" margin={{ left: 12, right: 16 }}>
+                  <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 11 }} tickFormatter={v => `₹${Number(v) / 1000}k`} />
+                  <YAxis type="category" dataKey="short" width={110} tick={{ fontSize: 11 }} />
+                  <Tooltip formatter={value => formatCurrency(Number(value))} />
+                  <Bar dataKey="revenue" fill="#059669" radius={[0, 10, 10, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </ChartWrap>
+          )}
+        </Panel>
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-3">
+        <Panel title="Purchases & Expenses" subtitle="Cost visibility for selected range">
+          <div className="space-y-3">
+            <KpiCard label="Purchases" value={formatCurrency(purchaseTotal)} icon={<ShoppingBag className="size-5" />} tone="blue" />
+            <KpiCard label="Expenses" value={formatCurrency(expenseTotal)} icon={<TrendingDown className="size-5" />} tone="red" />
+          </div>
+        </Panel>
+        <Panel title="Available Balance" subtitle="Ledger-based current balance split">
+          <div className="grid grid-cols-2 gap-3">
+            <KpiCard label="Cash" value={formatCurrency(balanceSummary.cash)} icon={<Banknote className="size-5" />} tone="green" />
+            <KpiCard label="UPI" value={formatCurrency(balanceSummary.upi)} icon={<Smartphone className="size-5" />} tone="blue" />
+            <KpiCard label="Card" value={formatCurrency(balanceSummary.card)} icon={<CreditCard className="size-5" />} tone="purple" />
+            <KpiCard label="Bank" value={formatCurrency(balanceSummary.bank)} icon={<Landmark className="size-5" />} tone="slate" />
+          </div>
+        </Panel>
+        <Panel title="Daily Closure Status" subtitle={`Status for ${closureDate}`}>
+          <div className="space-y-3">
+            {closureStatusChart.map((row, index) => (
+              <div key={row.status} className="flex items-center justify-between rounded-2xl bg-slate-50 p-3">
+                <div className="flex items-center gap-2"><span className="size-2 rounded-full" style={{ background: CHART_COLORS[index] }} /><p className="text-sm font-bold text-slate-700">{row.status}</p></div>
+                <p className="text-xl font-black text-slate-950">{row.count}</p>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+
+  // CHANGE 14: Removed top KPI grid from RetailTab. CHANGE 4/6: Added date presets + Excel download, no branch filter (retail only)
+  const RetailTab = (
+    <div className="space-y-5">
+      {/* TOP BAR: date presets + date range + excel (no branch filter - retail only) */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+        <DatePresets fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} />
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <button onClick={() => csvDownload(`Admin_Retail_${fromDate}_${toDate}.csv`, retailOrdersInRange.map(o => ({ OrderNo: o.orderNumber, Customer: o.customerName || '-', Items: o.items.reduce((s, i) => s + i.quantity, 0), Payment: o.paymentType || '-', Total: o.total || 0, Status: o.status, Time: fmtDateTime(o.createdAt) })))}
+            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+            <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+        </div>
+      </div>
+
+      {/* KPI Summary Cards */}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <KpiCard label="Total Sales" value={formatCurrency(retailSalesTotal)} icon={<IndianRupee className="size-5" />} tone="green" sub={`${retailServedOrders.length} orders`} />
+        <KpiCard label="Cancelled" value={retailCancelledOrders.length} icon={<TrendingDown className="size-5" />} tone="red" sub="Cancelled orders" />
+        <KpiCard label="Cash Collected" value={formatCurrency(retailPaymentSplit.cash)} icon={<Banknote className="size-5" />} tone="blue" />
+        <KpiCard label="UPI Collected" value={formatCurrency(retailPaymentSplit.upi)} icon={<Smartphone className="size-5" />} tone="purple" />
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-2">
+        <Panel title="Retail Sales Trend" subtitle="Retail-only revenue trend">
+          <ChartWrap>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={dailySalesTrend}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${Number(v) / 1000}k`} width={72} />
+                <Tooltip formatter={value => formatCurrency(Number(value))} />
+                <Line dataKey="Retail" stroke="#16a34a" strokeWidth={3} dot={{ r: 3 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </ChartWrap>
+        </Panel>
+
+        <Panel title="Retail Payment Split" subtitle="Cash, UPI, Card and Credit breakdown">
+          {Object.values(retailPaymentSplit).every(v => v === 0) ? <EmptyState label="No payment data for selected range." /> : (
+            <ChartWrap>
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={[{ name: 'Cash', value: retailPaymentSplit.cash }, { name: 'UPI', value: retailPaymentSplit.upi }, { name: 'Card', value: retailPaymentSplit.card }, { name: 'Credit', value: retailPaymentSplit.credit }].filter(d => d.value > 0)} dataKey="value" nameKey="name" innerRadius={55} outerRadius={95} paddingAngle={4}>
+                    {PAYMENT_COLORS.map((color, i) => <Cell key={i} fill={color} />)}
+                  </Pie>
+                  <Tooltip formatter={value => formatCurrency(Number(value))} />
+                </PieChart>
+              </ResponsiveContainer>
+            </ChartWrap>
+          )}
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            {[{ name: 'Cash', value: retailPaymentSplit.cash, color: PAYMENT_COLORS[0] }, { name: 'UPI', value: retailPaymentSplit.upi, color: PAYMENT_COLORS[1] }, { name: 'Card', value: retailPaymentSplit.card, color: PAYMENT_COLORS[2] }, { name: 'Credit', value: retailPaymentSplit.credit, color: PAYMENT_COLORS[3] }].filter(d => d.value > 0).map(d => (
+              <div key={d.name} className="rounded-2xl bg-slate-50 p-3">
+                <div className="flex items-center gap-2"><span className="size-2 rounded-full" style={{ background: d.color }} /><p className="text-xs font-black text-slate-700">{d.name}</p></div>
+                <p className="mt-1 text-sm font-black text-slate-950">{formatCurrency(d.value)}</p>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      </div>
+
+      <Panel title="Recent Retail Orders" subtitle="Served and cancelled orders in selected range">
+        {retailOrdersInRange.length === 0 ? <EmptyState label="No retail orders in this range." /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[720px] text-sm">
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Order</th><th className="p-3">Customer</th><th className="p-3">Items</th><th className="p-3">Payment</th><th className="p-3 text-right">Total</th><th className="p-3">Status</th><th className="p-3">Time</th></tr></thead>
+              <tbody className="divide-y">
+                {retailOrdersInRange.slice(0, 60).map(o => (
+                  <tr key={o.id} className="hover:bg-slate-50">
+                    <td className="p-3 font-bold">#{String(o.orderNumber).padStart(3, '0')}</td>
+                    <td className="p-3">{o.customerName || '-'}</td>
+                    <td className="p-3 text-slate-500">{o.items.reduce((s, i) => s + i.quantity, 0)} item(s)</td>
+                    <td className="p-3 uppercase">{o.paymentType || '-'}</td>
+                    <td className="p-3 text-right font-black">{formatCurrency(o.total || 0)}</td>
+                    <td className="p-3"><Badge tone={o.status === 'served' ? 'green' : o.status === 'cancelled' ? 'red' : 'amber'}>{o.status}</Badge></td>
+                    <td className="p-3 text-slate-500">{fmtDateTime(o.createdAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  // CHANGE 7: Branch filter + date presets + Excel. CHANGE 14: Removed KPI grid. Retail excluded from branch filter
+  const BRANCH_ONLY_OPTIONS: Branch[] = ['SECONDARY_OUTLET', 'PRIMARY_OUTLET', 'Wholesale'];
+  const filteredBranchTxns = branchFilter === 'all' || branchFilter === 'Retail' ? branchTransactions : branchTransactions.filter(t => t.branch === branchFilter);
+  const branchOnlyFilter = (branchFilter === 'Retail' ? 'all' : branchFilter) as Branch | 'all';
+  const BranchesTab = (
+    <div className="space-y-5">
+      {/* TOP BAR: date presets + branch filter (no Retail) + excel */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+        <DatePresets fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} />
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <select value={branchOnlyFilter} onChange={e => setBranchFilter(e.target.value as Branch | 'all')} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-900 outline-none">
+            <option value="all">All branches</option>
+            {BRANCH_ONLY_OPTIONS.map(branch => <option key={branch} value={branch}>{BRANCH_LABELS[branch]}</option>)}
+          </select>
+          <button onClick={() => csvDownload(`Admin_BranchSales_${fromDate}_${toDate}.csv`, filteredBranchTxns.map(t => ({ Branch: t.branch, Item: t.itemName, Qty: t.qty, Payment: t.payment, Revenue: t.revenue, 'Sold By': t.soldBy, Time: fmtDateTime(t.soldAt) })))}
+            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+            <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+        </div>
+      </div>
+
+      {/* Branch KPI Cards */}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {branchSalesByBranch.filter(b => b.branch !== 'Retail').map((b, i) => (
+          <KpiCard key={b.branch} label={b.label} value={formatCurrency(b.sales)} icon={<Store className="size-5" />} tone={(['green', 'blue', 'purple'] as const)[i % 3]} sub={`${b.orders} transactions`} />
+        ))}
+        <KpiCard label="Total Branch Revenue" value={formatCurrency(branchSalesByBranch.filter(b => b.branch !== 'Retail').reduce((sum, b) => sum + b.sales, 0))} icon={<TrendingUp className="size-5" />} tone="amber" />
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-2">
+        <Panel title="Branch Sales Comparison" subtitle="Revenue by branch for selected range">
+          <ChartWrap>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={branchOnlyFilter === 'all' ? branchSalesByBranch.filter(b => b.branch !== 'Retail') : branchSalesByBranch.filter(b => b.branch === branchOnlyFilter)}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${Number(v) / 1000}k`} width={72} />
+                <Tooltip formatter={value => formatCurrency(Number(value))} />
+                <Bar dataKey="sales" radius={[10, 10, 0, 0]} fill="#2563eb" />
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartWrap>
+        </Panel>
+
+        <Panel title="Daily Branch Sales Trend" subtitle="Day-by-day revenue for selected range">
+          <ChartWrap>
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={dailySalesTrend}>
+                <defs>
+                  <linearGradient id="primary_outletFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#2563eb" stopOpacity={0.25} /><stop offset="95%" stopColor="#2563eb" stopOpacity={0} /></linearGradient>
+                  <linearGradient id="secondary_outletFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#7c3aed" stopOpacity={0.25} /><stop offset="95%" stopColor="#7c3aed" stopOpacity={0} /></linearGradient>
+                  <linearGradient id="wholesaleFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#d97706" stopOpacity={0.25} /><stop offset="95%" stopColor="#d97706" stopOpacity={0} /></linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${Number(v) / 1000}k`} width={72} />
+                <Tooltip formatter={value => formatCurrency(Number(value))} />
+                {(branchOnlyFilter === 'all' || branchOnlyFilter === 'PRIMARY_OUTLET') && <Area type="monotone" dataKey="PRIMARY_OUTLET" stroke="#2563eb" fill="url(#primary_outletFill)" strokeWidth={2} />}
+                {(branchOnlyFilter === 'all' || branchOnlyFilter === 'SECONDARY_OUTLET') && <Area type="monotone" dataKey="SECONDARY_OUTLET" stroke="#7c3aed" fill="url(#secondary_outletFill)" strokeWidth={2} />}
+                {(branchOnlyFilter === 'all' || branchOnlyFilter === 'Wholesale') && <Area type="monotone" dataKey="Wholesale" stroke="#d97706" fill="url(#wholesaleFill)" strokeWidth={2} />}
+              </AreaChart>
+            </ResponsiveContainer>
+          </ChartWrap>
+        </Panel>
+      </div>
+
+      <Panel title="Branch Sales Transactions" subtitle="Retail, secondary outlet and wholesale sales details">
+        {filteredBranchTxns.length === 0 ? <EmptyState label="No branch sales in this range." /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[860px] text-sm">
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Branch</th><th className="p-3">Item</th><th className="p-3 text-right">Qty</th><th className="p-3">Payment</th><th className="p-3 text-right">Revenue</th><th className="p-3">Sold By</th><th className="p-3">Time</th></tr></thead>
+              <tbody className="divide-y">
+                {filteredBranchTxns.slice(0, 100).map(t => (
+                  <tr key={t.id} className="hover:bg-slate-50">
+                    <td className="p-3"><BranchPill branch={t.branch} /></td>
+                    <td className="p-3 font-semibold">{t.itemName}</td>
+                    <td className="p-3 text-right tabular-nums">{t.qty}</td>
+                    <td className="p-3 uppercase text-slate-500">{t.payment}</td>
+                    <td className="p-3 text-right font-black">{formatCurrency(t.revenue)}</td>
+                    <td className="p-3 text-slate-500">{t.soldBy}</td>
+                    <td className="p-3 text-slate-500">{fmtDateTime(t.soldAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  const ItemsTab = (
+    <div className="space-y-5">
+      <Panel title="Item Controls" subtitle="Items without stock are marked unavailable and cannot be billed from the branch billing flow.">
+        <div className="mb-4 grid gap-2 sm:grid-cols-2">
+          <button onClick={() => setItemsSection('primary_outlet')} className={cn('rounded-2xl border p-4 text-left transition', itemsSection === 'primary_outlet' ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 bg-white hover:bg-slate-50')}>
+            <p className="font-black">Primary Outlet Items</p>
+            <p className={cn('mt-1 text-xs', itemsSection === 'primary_outlet' ? 'text-white/70' : 'text-slate-500')}>Shared retail and wholesale bakery price list with stock badges</p>
+          </button>
+          <button onClick={() => setItemsSection('secondary_outlet')} className={cn('rounded-2xl border p-4 text-left transition', itemsSection === 'secondary_outlet' ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 bg-white hover:bg-slate-50')}>
+            <p className="font-black">Secondary Outlet Items</p>
+            <p className={cn('mt-1 text-xs', itemsSection === 'secondary_outlet' ? 'text-white/70' : 'text-slate-500')}>Secondary outlet item list with stock validation visibility</p>
+          </button>
+        </div>
+        {itemsSection === 'primary_outlet' ? <PrimaryOutletItemsTab /> : <SecondaryOutletItemsTab />}
+      </Panel>
+    </div>
+  );
+
+  const [disputeQtyById, setDisputeQtyById] = useState<Record<string, string>>({});
+  const [savingDisputeId, setSavingDisputeId] = useState('');
+  const [disputeMessage, setDisputeMessage] = useState('');
+  const stockDisputes = useMemo(() => ADMIN_BRANCHES.flatMap(branch =>
+    (incoming[branch] || [])
+      .filter(item => item.disputed && !item.confirmed)
+      .map(item => ({ ...item, branch })),
+  ).sort((a, b) => new Date(b.disputedAt || b.receivedAt).getTime() - new Date(a.disputedAt || a.receivedAt).getTime()), [incoming]);
+
+  useEffect(() => {
+    setDisputeQtyById(prev => {
+      const next = { ...prev };
+      let changed = false;
+      stockDisputes.forEach(item => {
+        if (next[item.id] === undefined) {
+          next[item.id] = String(item.quantity);
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [stockDisputes]);
+
+  const resolveStockDispute = async (branch: Branch, incomingId: string) => {
+    const item = stockDisputes.find(row => row.branch === branch && row.id === incomingId);
+    if (!item) return;
+    const correctedQty = Number(disputeQtyById[incomingId] ?? item.quantity);
+    if (!Number.isFinite(correctedQty) || correctedQty < 0) {
+      setDisputeMessage('Enter a valid corrected quantity before confirming.');
+      return;
+    }
+    setSavingDisputeId(incomingId);
+    setDisputeMessage('');
+    const { error } = await supabase
+      .from('branch_incoming')
+      .update({
+        quantity: Math.round(correctedQty * 1000) / 1000,
+        disputed: false,
+        dispute_reason: `${item.disputeReason || 'Dispute'} | Resolved by ${adminName}`,
+      })
+      .eq('id', incomingId)
+      .eq('branch', branch);
+    if (error) {
+      setDisputeMessage(`Could not update disputed stock: ${error.message}`);
+      setSavingDisputeId('');
+      return;
+    }
+    await fetchBranchData(branch);
+    const confirmError = await confirmIncoming(branch, incomingId);
+    if (confirmError) {
+      setDisputeMessage(confirmError);
+      setSavingDisputeId('');
+      return;
+    }
+    notifications
+      .filter(n => n.branch === branch && n.type === 'Stock Dispute' && n.status !== 'Resolved' && n.details.includes(item.itemName))
+      .forEach(n => updateNotificationStatus(n.id, 'Resolved', adminName));
+    await fetchBranchData(branch);
+    setDisputeMessage(`${BRANCH_LABELS[branch]} ${item.itemName} confirmed with corrected quantity ${correctedQty} ${item.unit}. Stock synced.`);
+    setSavingDisputeId('');
+  };
+
+  const StockDisputesTab = (
+    <div className="space-y-5">
+      <Panel
+        title="Incoming Stock Disputes"
+        subtitle="Admin approval is required before disputed incoming stock can sync to branch stock."
+        action={<Badge tone={stockDisputes.length > 0 ? 'amber' : 'green'}>{stockDisputes.length} pending</Badge>}
+      >
+        {disputeMessage && (
+          <p className="mb-3 rounded-2xl bg-blue-50 px-3 py-2 text-sm font-black text-blue-700">{disputeMessage}</p>
+        )}
+        {stockDisputes.length === 0 ? <EmptyState label="No incoming stock disputes pending." /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[980px] text-sm">
+              <thead>
+                <tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500">
+                  <th className="p-3">Branch</th>
+                  <th className="p-3">Item</th>
+                  <th className="p-3 text-right">Dispatched</th>
+                  <th className="p-3">Correct Qty</th>
+                  <th className="p-3">Reason</th>
+                  <th className="p-3">Raised By</th>
+                  <th className="p-3">Date</th>
+                  <th className="p-3 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {stockDisputes.map(item => (
+                  <tr key={`${item.branch}-${item.id}`} className="hover:bg-slate-50">
+                    <td className="p-3"><BranchPill branch={item.branch} /></td>
+                    <td className="p-3 font-black">{item.itemName}</td>
+                    <td className="p-3 text-right font-black tabular-nums">{item.quantity} {item.unit}</td>
+                    <td className="p-3">
+                      <input
+                        type="number"
+                        min="0"
+                        step={item.unit === 'kg' ? '0.001' : '1'}
+                        value={disputeQtyById[item.id] ?? String(item.quantity)}
+                        onChange={event => setDisputeQtyById(prev => ({ ...prev, [item.id]: event.target.value }))}
+                        className="h-10 w-28 rounded-2xl border border-slate-200 px-3 text-sm font-black tabular-nums"
+                      />
+                    </td>
+                    <td className="p-3 text-slate-600">{item.disputeReason || '-'}</td>
+                    <td className="p-3 text-slate-600">{item.disputedBy || '-'}</td>
+                    <td className="p-3 text-slate-500">{fmtDateTime(item.disputedAt || item.receivedAt)}</td>
+                    <td className="p-3 text-right">
+                      <button
+                        type="button"
+                        disabled={savingDisputeId === item.id}
+                        onClick={() => void resolveStockDispute(item.branch, item.id)}
+                        className="rounded-2xl bg-orange-500 px-4 py-2 text-xs font-black text-white shadow-lg shadow-orange-200 disabled:opacity-50"
+                      >
+                        {savingDisputeId === item.id ? 'Saving...' : 'Confirm & Sync'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  // CHANGE 9: Improved DailyClosureTab with presets, better layout, summary totals. CHANGE 14: Removed KPI grid
+  const DailyClosureTab = (
+    <div className="space-y-5">
+      {/* CHANGE 9c: closure date presets (Today/Yesterday only) */}
+      <div className="flex gap-1.5">
+        {[{ label: 'Today', days: 0 }, { label: 'Yesterday', days: 1 }].map(p => (
+          <button key={p.label} onClick={() => { const d = new Date(); d.setDate(d.getDate() - p.days); setClosureDate(todayInput(d)); }}
+            className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-black text-slate-600 hover:bg-slate-950 hover:text-white transition">
+            {p.label}
+          </button>
+        ))}
+      </div>
+      <Panel title="Daily Closure Verification" subtitle="Retail, Retail Outlet, Secondary Retail Outlet and Wholesale Outlet"
+        action={<div className="flex flex-wrap gap-2"><button onClick={() => adminLedger.refresh()} disabled={adminLedger.loading} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black disabled:opacity-60"><RefreshCw className={cn('size-3.5', adminLedger.loading && 'animate-spin')} />Refresh</button><button onClick={printDailyClosure} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black"><Printer className="size-3.5" />Print</button><button onClick={exportDailyClosure} className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white"><Download className="size-3.5" />Export</button></div>}>
+        <div className="mb-4 grid gap-2 lg:grid-cols-[180px_220px_1fr]">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            Date<input type="date" value={closureDate} onChange={e => setClosureDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <select value={branchFilter} onChange={e => setBranchFilter(e.target.value as Branch | 'all')} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none">
+            <option value="all">All branches</option>
+            {BRANCHES.map(branch => <option key={branch} value={branch}>{BRANCH_LABELS[branch]}</option>)}
+          </select>
+          <div className="flex items-center gap-2 rounded-2xl bg-slate-50 px-3 py-2 text-xs text-slate-500"><Filter className="size-4" />Verify sales, collections, expenses, deposits and closing differences before approving.</div>
+        </div>
+
+        {/* CHANGE 9a: Better visual layout per branch card */}
+        <div className="grid gap-4">
+          {filteredClosureRows.map(row => (
+            <div key={row.branch} className="rounded-3xl border border-slate-200 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3">
+                  <div className={cn('grid size-12 place-items-center rounded-2xl', BRANCH_COLORS[row.branch].bg)}><Store className={cn('size-5', BRANCH_COLORS[row.branch].text)} /></div>
+                  <div><h4 className="font-display text-lg font-black text-slate-950">{BRANCH_LABELS[row.branch]}</h4><p className="text-xs text-slate-500">Closed by {row.closedBy} · {row.closedAt}</p></div>
+                </div>
+                <Badge tone={row.status === 'Closed' ? 'green' : row.status === 'Review' ? 'red' : 'amber'}>{row.status}</Badge>
+              </div>
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <div>
+                  <p className="mb-2 text-[10px] font-black uppercase text-slate-500">Cash Flow</p>
+                  <div className="space-y-1.5">
+                    {[['Opening', row.openingBalance, 'text-slate-700'], ['Cash Sales', row.cashSales, 'text-emerald-700'], ['Returns', -row.returns, row.returns > 0 ? 'text-red-600' : 'text-slate-500'], ['Expenses', -row.expenses, row.expenses > 0 ? 'text-red-600' : 'text-slate-500'], ['Purchase Payments', -row.purchasePayments, row.purchasePayments > 0 ? 'text-red-600' : 'text-slate-500'], ['Bank Deposits', -row.bankDeposits, row.bankDeposits > 0 ? 'text-red-600' : 'text-slate-500'], ['Closing Balance', row.closingBalance, 'text-slate-900 font-black'], ['Difference', row.differenceAmount, Math.abs(row.differenceAmount) >= 10 ? 'text-red-600 font-black' : 'text-emerald-600']].map(([label, value, cls]) => (
+                      <div key={String(label)} className="flex justify-between text-xs"><span className="text-slate-500">{label}</span><span className={cn('tabular-nums', String(cls))}>{formatCurrency(Number(value))}</span></div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <p className="mb-2 text-[10px] font-black uppercase text-slate-500">Digital & Credit</p>
+                  <div className="space-y-1.5">
+                    {[['Total Sales', row.totalSales, 'text-slate-900 font-black'], ['UPI Sales', row.upiSales, 'text-blue-700'], ['Card Sales', row.cardSales, 'text-purple-700'], ['Credit Sales', row.creditSales, 'text-amber-700'], ['Net Sales', row.netSales, 'text-emerald-700 font-black']].map(([label, value, cls]) => (
+                      <div key={String(label)} className="flex justify-between text-xs"><span className="text-slate-500">{label}</span><span className={cn('tabular-nums', String(cls))}>{formatCurrency(Number(value))}</span></div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              {row.remarks && <p className="mt-3 rounded-2xl bg-slate-50 px-3 py-2 text-xs text-slate-600"><b>Remarks:</b> {row.remarks}</p>}
+            </div>
+          ))}
+        </div>
+
+        {/* CHANGE 9d: Summary totals row */}
+        {filteredClosureRows.length > 1 && (
+          <div className="mt-4 rounded-3xl border border-slate-200 bg-slate-50 p-4">
+            <p className="mb-3 text-[10px] font-black uppercase text-slate-500">Totals — All Branches</p>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+              {[['Total Sales', closureTotals.sales], ['Cash', closureTotals.cash], ['UPI', closureTotals.upi], ['Card', closureTotals.card], ['Credit', closureTotals.credit], ['Difference', closureTotals.diff]].map(([label, value]) => (
+                <div key={String(label)} className="rounded-2xl bg-white border border-slate-200 p-3">
+                  <p className="text-[10px] font-black uppercase text-slate-500">{label}</p>
+                  <p className="mt-1 text-sm font-black text-slate-950 tabular-nums">{formatCurrency(Number(value))}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  // CreditsTab KPI data
+  const { creditSales: allCreditSalesMap, advanceOrders: allAdvanceOrdersMap } = useBranchStore(useShallow(s => ({ creditSales: s.creditSales, advanceOrders: s.advanceOrders })));
+  const allCredits = useMemo(() => ADMIN_BRANCHES.flatMap(branch => (allCreditSalesMap[branch] || []).map(c => ({ ...c, branch }))), [allCreditSalesMap]);
+  const pendingCredits = useMemo(() => allCredits.filter(c => c.status === 'pending'), [allCredits]);
+  const partialCredits = useMemo(() => allCredits.filter(c => c.status === 'partial'), [allCredits]);
+  const settledCredits = useMemo(() => allCredits.filter(c => c.status === 'settled'), [allCredits]);
+  const totalPending = useMemo(() => pendingCredits.reduce((s, c) => s + Number(c.creditAmount || 0), 0), [pendingCredits]);
+
+  // AdvanceTab KPI data
+  const allAdvances = useMemo(() => ADMIN_BRANCHES.flatMap(branch => (allAdvanceOrdersMap[branch] || []).map(a => ({ ...a, branch }))), [allAdvanceOrdersMap]);
+  const pendingAdvances = useMemo(() => allAdvances.filter(a => a.status === 'pending'), [allAdvances]);
+  const deliveredAdvances = useMemo(() => allAdvances.filter(a => a.status === 'completed'), [allAdvances]);
+  const totalAdvanceValue = useMemo(() => allAdvances.reduce((s, a) => s + Number(a.subtotal || 0), 0), [allAdvances]);
+  const advanceBalanceDue = useMemo(() => allAdvances.reduce((s, a) => s + Number(a.balanceDue || 0), 0), [allAdvances]);
+
+  const CreditsTab = (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+        <DatePresets fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} />
+        <div className="flex flex-wrap gap-2">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+        </div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <KpiCard label="Total Credits" value={allCredits.length} icon={<WalletCards className="size-5" />} tone="slate" />
+        <KpiCard label="Pending" value={pendingCredits.length} icon={<AlertTriangle className="size-5" />} tone={pendingCredits.length > 0 ? 'red' : 'slate'} sub={formatCurrency(totalPending)} />
+        <KpiCard label="Partial" value={partialCredits.length} icon={<CreditCard className="size-5" />} tone="amber" />
+        <KpiCard label="Settled" value={settledCredits.length} icon={<TrendingUp className="size-5" />} tone="green" />
+      </div>
+      <Panel title="Credit Management" subtitle="All branches — pending, partial and settled credit sales">
+        <AdminCreditTab branches={ADMIN_BRANCHES} />
+      </Panel>
+    </div>
+  );
+
+  // AdvanceTab — improved with top bar + KPI summary
+  const AdvanceTab = (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+        <DatePresets fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} />
+        <div className="flex flex-wrap gap-2">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibond text-slate-600">
+            To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <button onClick={() => csvDownload(`Admin_AdvanceOrders_${fromDate}_${toDate}.csv`, allAdvances.map(a => ({ Branch: a.branch, Customer: a.customerName || '-', 'Delivery Date': a.deliveryDate || '-', Subtotal: a.subtotal || 0, 'Advance Paid': a.advanceAmount || 0, 'Balance Due': a.balanceDue || 0, Status: a.status })))}
+            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+            <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+        </div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <KpiCard label="Total Orders" value={allAdvances.length} icon={<ClipboardList className="size-5" />} tone="slate" />
+        <KpiCard label="Active Orders" value={pendingAdvances.length} icon={<AlertTriangle className="size-5" />} tone={pendingAdvances.length > 0 ? 'amber' : 'slate'} />
+        <KpiCard label="Delivered" value={deliveredAdvances.length} icon={<TrendingUp className="size-5" />} tone="green" />
+        <KpiCard label="Balance Due" value={formatCurrency(advanceBalanceDue)} icon={<IndianRupee className="size-5" />} tone={advanceBalanceDue > 0 ? 'red' : 'slate'} sub={`of ${formatCurrency(totalAdvanceValue)} total`} />
+      </div>
+      <Panel title="Advance Order Management" subtitle="Advance bookings and balance verification across all branches">
+        <AdminAdvanceTab branches={ADMIN_BRANCHES} />
+      </Panel>
+    </div>
+  );
+
+  const [varianceBranchFilter, setVarianceBranchFilter] = useState<Branch | 'all'>('all');
+  const [varianceSearch, setVarianceSearch] = useState('');
+  const filteredVarianceRecords = useMemo(() => {
+    return stockVarianceRecords
+      .filter(r => varianceBranchFilter === 'all' || r.branch === varianceBranchFilter)
+      .filter(r => !varianceSearch || r.itemName.toLowerCase().includes(varianceSearch.toLowerCase()) || r.reportNo?.toLowerCase().includes(varianceSearch.toLowerCase()));
+  }, [stockVarianceRecords, varianceBranchFilter, varianceSearch]);
+  const excessVariance = filteredVarianceRecords.filter(r => r.difference > 0);
+  const shortVariance = filteredVarianceRecords.filter(r => r.difference < 0);
+
+  const StockVarianceTab = (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-wrap gap-2">
+          <select value={varianceBranchFilter} onChange={e => setVarianceBranchFilter(e.target.value as Branch | 'all')} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-900 outline-none">
+            <option value="all">All branches</option>
+            {BRANCHES.map(b => <option key={b} value={b}>{BRANCH_LABELS[b]}</option>)}
+          </select>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+            <input value={varianceSearch} onChange={e => setVarianceSearch(e.target.value)} placeholder="Search item or report" className="rounded-2xl border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm outline-none" />
+          </div>
+        </div>
+        <button onClick={() => csvDownload('Admin_StockVariance.csv', filteredVarianceRecords.map(r => ({ Date: fmtDateTime(r.createdAt), Branch: r.branch, Report: r.reportNo, Item: r.itemName, Unit: r.unit || '', 'System Qty': r.systemQty, 'Physical Qty': r.physicalQty, Difference: r.difference, 'Reported By': r.reportedBy, 'Confirmed By': r.confirmedBy })))}
+          className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+          <FileSpreadsheet className="size-3.5" /> Excel
+        </button>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <KpiCard label="Total Variances" value={filteredVarianceRecords.length} icon={<AlertTriangle className="size-5" />} tone="slate" />
+        <KpiCard label="Excess (Physical > System)" value={excessVariance.length} icon={<TrendingUp className="size-5" />} tone="blue" />
+        <KpiCard label="Short (Physical < System)" value={shortVariance.length} icon={<TrendingDown className="size-5" />} tone={shortVariance.length > 0 ? 'red' : 'slate'} />
+      </div>
+      <Panel title="Stock Variance Records" subtitle="Physical stock-count differences confirmed by branch admin">
+        {filteredVarianceRecords.length === 0 ? (
+          <EmptyState label={stockVarianceRecords.length === 0 ? "No stock variance records yet. Differences appear after Outlet Management confirms a stock-count report." : "No records match current filters."} />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[920px] text-sm">
+              <thead>
+                <tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500">
+                  <th className="p-3">Date</th><th className="p-3">Branch</th><th className="p-3">Report</th><th className="p-3">Item</th>
+                  <th className="p-3 text-right">System</th><th className="p-3 text-right">Physical</th><th className="p-3 text-right">Difference</th>
+                  <th className="p-3">Reported By</th><th className="p-3">Confirmed By</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {filteredVarianceRecords.slice(0, 300).map(row => (
+                  <tr key={row.id} className="hover:bg-slate-50">
+                    <td className="p-3 text-slate-500">{fmtDateTime(row.createdAt)}</td>
+                    <td className="p-3"><BranchPill branch={row.branch} /></td>
+                    <td className="p-3 font-bold">{row.reportNo}</td>
+                    <td className="p-3 font-semibold">{row.itemName}</td>
+                    <td className="p-3 text-right tabular-nums">{row.systemQty} {row.unit}</td>
+                    <td className="p-3 text-right tabular-nums">{row.physicalQty} {row.unit}</td>
+                    <td className="p-3 text-right"><Badge tone={row.difference > 0 ? 'red' : row.difference < 0 ? 'blue' : 'slate'}>{row.difference > 0 ? `+${row.difference}` : row.difference}</Badge></td>
+                    <td className="p-3 text-slate-500">{row.reportedBy}</td>
+                    <td className="p-3 text-slate-500">{row.confirmedBy}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  // CHANGE 12: Simplified AuditTab — shows only main details
+  const AuditTab = (
+    <div className="space-y-5">
+      <Panel title="Admin Audit Logs" subtitle="Sensitive edits, stock changes, duplicate prints and closure actions"
+        action={
+          <div className="flex flex-wrap items-center gap-2">
+            <button onClick={() => { BRANCHES.forEach(b => void fetchBranchData(b)); void fetchStockMismatches(); }}
+              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50">
+              <RefreshCw className="size-3.5" />Refresh
+            </button>
+            <button onClick={() => csvDownload('Admin_AuditLogs.csv', filteredAuditLogs.map(l => ({ Time: fmtDateTime(l.createdAt), Branch: l.branch, User: l.user, Action: l.action })))}
+              className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+              <FileSpreadsheet className="size-3.5" />Excel
+            </button>
+          </div>
+        }>
+        <div className="mb-4 grid gap-2 lg:grid-cols-[1fr_180px_200px]">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+            <input value={auditSearch} onChange={e => setAuditSearch(e.target.value)} placeholder="Search action, user or branch" className="w-full rounded-2xl border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-slate-300" />
+          </div>
+          <select value={auditBranchFilter} onChange={e => setAuditBranchFilter(e.target.value as Branch | 'all')} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none">
+            <option value="all">All branches</option>
+            {BRANCHES.map(branch => <option key={branch} value={branch}>{BRANCH_LABELS[branch]}</option>)}
+          </select>
+          <div className="flex gap-2">
+            <label className="flex flex-1 items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+              From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+            </label>
+            <label className="flex flex-1 items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+              To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+            </label>
+          </div>
+        </div>
+        {filteredAuditLogs.length === 0 ? (
+          <EmptyState label={auditLogs.length === 0 ? "Audit logs are written when stock edits, duplicate prints, and closure actions occur in branch dashboards." : "No audit logs match the current filters."} />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[560px] text-sm">
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Time</th><th className="p-3">Branch</th><th className="p-3">User</th><th className="p-3">Action</th></tr></thead>
+              <tbody className="divide-y">
+                {filteredAuditLogs.slice(0, 150).map(log => (
+                  <tr key={log.id} className="hover:bg-slate-50">
+                    <td className="p-3 text-slate-500">{fmtDateTime(log.createdAt)}</td>
+                    <td className="p-3"><BranchPill branch={log.branch} /></td>
+                    <td className="p-3 font-semibold">{log.user}</td>
+                    <td className="p-3">{log.action}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  // Invoices Tab — uses the full AdminInvoicesTab so admin can view, approve and reject
+  // Alerts Tab — no low stock
+  const nonLowStockNotifications = useMemo(() =>
+    adminNotifications.filter(n => n.type !== 'low_stock'),
+    [adminNotifications]
+  );
+  const AlertsTab = (
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <KpiCard label="Total Alerts" value={nonLowStockNotifications.length} icon={<Bell className="size-5" />} tone="slate" />
+        <KpiCard label="Unread" value={nonLowStockNotifications.filter(n => !n.isRead).length} icon={<AlertTriangle className="size-5" />} tone={nonLowStockNotifications.filter(n => !n.isRead).length > 0 ? 'red' : 'slate'} />
+        <KpiCard label="Credit Alerts" value={nonLowStockNotifications.filter(n => n.type === 'credit_sale').length} icon={<WalletCards className="size-5" />} tone="amber" />
+      </div>
+      <Panel title="Business Alerts" subtitle="Credit, packing, invoice and operational alerts — low stock excluded">
+        {nonLowStockNotifications.length === 0 ? <EmptyState label="No alerts. Credit sales, invoice and packing alerts will appear here." /> : (
+          <div className="space-y-3">
+            {nonLowStockNotifications.slice(0, 50).map(n => (
+              <button type="button" key={n.id} onClick={() => { if (!n.isRead) void markRead(n.id); }} className={cn('w-full rounded-2xl border p-4 text-left transition', n.isRead ? 'border-slate-100 bg-slate-50' : 'border-amber-200 bg-amber-50 hover:bg-amber-100')}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-black text-slate-900">{n.title}</p>
+                    <p className="mt-1 text-xs text-slate-600">{n.body}</p>
+                    <p className="mt-2 text-[10px] text-slate-400">{fmtDateTime(n.createdAt)}</p>
+                  </div>
+                  <Badge tone={n.isRead ? 'slate' : 'amber'}>{n.isRead ? 'Read' : 'Unread'}</Badge>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  // Complaints Tab — from SECONDARY_OUTLET and PRIMARY_OUTLET admins
+  const adminComplaints = useMemo(() =>
+    (complaints || []).filter(c => ['SECONDARY_OUTLET', 'PRIMARY_OUTLET'].includes(c.branch))
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [complaints]
+  );
+  const [complaintStatusUpdate, setComplaintStatusUpdate] = useState<Record<string, string>>({});
+  const ComplaintsTab = (
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <KpiCard label="Total Complaints" value={adminComplaints.length} icon={<ClipboardList className="size-5" />} tone="slate" />
+        <KpiCard label="Open" value={adminComplaints.filter(c => c.status === 'Open').length} icon={<AlertTriangle className="size-5" />} tone={adminComplaints.filter(c => c.status === 'Open').length > 0 ? 'red' : 'slate'} />
+        <KpiCard label="In Review" value={adminComplaints.filter(c => c.status === 'In Review').length} icon={<ShieldCheck className="size-5" />} tone="amber" />
+      </div>
+      <Panel title="Branch Admin Complaints" subtitle="Complaints raised by outlet management teams"
+        action={
+          <button onClick={() => csvDownload('Admin_Complaints.csv', adminComplaints.map(c => ({ Branch: c.branch, Area: c.complaintArea, Title: c.title, Details: c.details, 'Raised By': c.raisedBy, Status: c.status, Date: fmtDate(c.createdAt) })))}
+            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+            <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+        }>
+        {adminComplaints.length === 0 ? <EmptyState label="No complaints from outlet management teams yet." /> : (
+          <div className="space-y-4">
+            {adminComplaints.slice(0, 50).map(c => (
+              <div key={c.id} className={cn('rounded-3xl border p-4', c.status === 'Open' ? 'border-red-200 bg-red-50' : c.status === 'In Review' ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-white')}>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex items-center gap-3">
+                    <BranchPill branch={c.branch} />
+                    <div>
+                      <p className="text-sm font-black text-slate-900">{c.title}</p>
+                      <p className="text-xs text-slate-500">{c.complaintArea} · Raised by {c.raisedBy} · {fmtDate(c.createdAt)}</p>
+                    </div>
+                  </div>
+                  <Badge tone={c.status === 'Open' ? 'red' : c.status === 'In Review' ? 'amber' : 'green'}>{c.status}</Badge>
+                </div>
+                <p className="mt-3 text-sm text-slate-700">{c.details}</p>
+                <div className="mt-3 flex items-center gap-2">
+                  <select
+                    value={complaintStatusUpdate[c.id] || c.status}
+                    onChange={e => setComplaintStatusUpdate(prev => ({ ...prev, [c.id]: e.target.value }))}
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold outline-none">
+                    <option value="Open">Open</option>
+                    <option value="In Review">In Review</option>
+                    <option value="Resolved">Resolved</option>
+                  </select>
+                  <button
+                    onClick={() => {
+                      const newStatus = complaintStatusUpdate[c.id] || c.status;
+                      if (newStatus !== c.status) {
+                        updateComplaintStatus(c.id, newStatus as 'Open' | 'In Review' | 'Resolved', adminName);
+                      }
+                    }}
+                    className="rounded-xl bg-slate-950 px-3 py-1.5 text-xs font-black text-white">
+                    Update
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  const WasteTab = (
+    <Panel title="Branch Waste & Loss" subtitle="Confirmed dump, damage and transfer-out entries from all branches">
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-left text-sm">
+          <thead className="bg-slate-50 text-xs font-black uppercase text-slate-500">
+            <tr>{['Date', 'Branch', 'Type', 'Item', 'Quantity', 'Reason', 'Verified By'].map(label => <th key={label} className="px-3 py-3">{label}</th>)}</tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {wasteLogs.filter(row => inRange(row.createdAt, fromDate, toDate)).map(row => (
+              <tr key={row.id} className="hover:bg-amber-50/50">
+                <td className="whitespace-nowrap px-3 py-3 font-bold text-slate-600">{fmtDateTime(row.createdAt)}</td>
+                <td className="px-3 py-3"><BranchPill branch={row.branch} /></td>
+                <td className="px-3 py-3 font-black text-slate-800">{row.logType}</td>
+                <td className="px-3 py-3 font-black text-slate-950">{row.itemName}</td>
+                <td className="whitespace-nowrap px-3 py-3 font-black tabular-nums">{row.quantity} {row.unit}</td>
+                <td className="px-3 py-3 text-slate-600">{row.reason}</td>
+                <td className="px-3 py-3 font-bold text-slate-700">{row.verifiedBy}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!wasteLogs.some(row => inRange(row.createdAt, fromDate, toDate)) && <p className="p-8 text-center text-sm font-bold text-slate-500">No branch waste recorded for this period.</p>}
+      </div>
+    </Panel>
+  );
+
+  // Attendance Tab — embeds the full AttendanceSalary page
+  const AttendanceTab = (
+    <div className="space-y-5">
+      <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex items-center gap-3">
+          <div className="grid size-10 place-items-center rounded-xl bg-blue-50"><CalendarClock className="size-5 text-blue-600" /></div>
+          <div>
+            <p className="font-black text-slate-900">Staff Attendance & Payroll</p>
+            <p className="text-xs text-slate-500">Manage attendance, calculate salaries and track advances for all staff</p>
+          </div>
+        </div>
+      </div>
+      <AttendanceSalary />
+    </div>
+  );
+
+  const PublicOrdersTab = (
+    <Panel title="Paid Online Orders" subtitle="Orders appear here only after Razorpay signature verification succeeds">
+      {publicOrdersLoading ? <p className="p-8 text-center text-sm font-bold text-slate-500">Loading online orders…</p> : publicOrders.length === 0 ? <p className="p-8 text-center text-sm font-bold text-slate-500">No paid online orders yet.</p> : (
+        <div className="space-y-3">{publicOrders.map(order => <article key={order.id} className="rounded-2xl border border-slate-200 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black text-slate-950">{order.order_number} · {order.customer_name}</p><p className="text-xs text-slate-500">{order.customer_phone} · {fmtDateTime(order.created_at)}</p></div><div className="text-right"><p className="font-black text-emerald-700">{formatCurrency(order.amount)}</p><Badge tone="green">{order.status}</Badge></div></div>
+          <p className="mt-2 text-sm text-slate-700">{order.customer_address}</p><p className="text-xs text-slate-500">PIN: {order.location_pin}</p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">{(order.items || []).map((item, idx) => <div key={idx} className="rounded-xl bg-slate-50 px-3 py-2 text-xs"><span className="font-black">{item.name}</span> × {item.qty}<span className="float-right font-bold">{formatCurrency(item.price * item.qty)}</span></div>)}</div>
+          {order.notes && <p className="mt-2 text-xs text-slate-600">Note: {order.notes}</p>}
+          <div className="mt-4 flex flex-col gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between">
+            <div><p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Customer tracking status</p><p className="mt-1 text-xs font-bold text-slate-700">Changing this updates the customer tracking page immediately.</p></div>
+            <select
+              value={order.status}
+              disabled={publicOrderUpdating === order.id}
+              onChange={(event) => void updatePublicOrderStatus(order.id, event.target.value)}
+              className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-800 outline-none disabled:opacity-50"
+            >
+              {PUBLIC_ORDER_STATUS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </div>
+          <p className="mt-2 text-[10px] font-bold text-slate-400">Payment ID: {order.payment_id || '—'} · Tax included: 3%</p>
+        </article>)}</div>
+      )}
+    </Panel>
+  );
+
+  const activeContent: Record<AdminTab, ReactNode> = {
+    'public-orders': PublicOrdersTab,
+    planning: <AdminPlanningTab />,
+    overview: OverviewTab,
+    retail: RetailTab,
+    branches: BranchesTab,
+    items: ItemsTab,
+    'daily-closure': DailyClosureTab,
+    credits: CreditsTab,
+    advance: AdvanceTab,
+    'stock-disputes': StockDisputesTab,
+    'stock-variance': StockVarianceTab,
+    waste: WasteTab,
+    audit: AuditTab,
+    invoices: <AdminInvoicesTab />,
+    alerts: AlertsTab,
+    complaints: ComplaintsTab,
+    attendance: AttendanceTab,
+  };
+
+  const activeMeta = NAV_ITEMS.find(item => item.id === activeTab) || NAV_ITEMS[0];
+
+  return (
+    <main className="min-w-0 flex-1 px-4 py-5 sm:px-6 md:px-5 xl:px-8">
+      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={polling ? 'blue' : 'amber'}>{polling ? 'Auto refresh on' : 'Auto refresh off'}</Badge>
+          </div>
+          <h2 className="mt-1 font-display text-2xl font-black text-slate-950 sm:text-3xl">{activeMeta.label}</h2>
+          <p className="mt-1 text-sm text-slate-500">{activeMeta.description}</p>
+        </div>
+        <button onClick={() => { BRANCHES.forEach(b => void fetchBranchData(b)); void fetchStockMismatches(); }} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50"><RefreshCw className="size-3.5" />Refresh</button>
+      </div>
+
+      {!isAdmin && (
+        <div className="mb-5 flex items-center gap-3 rounded-3xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          <Lock className="size-5 shrink-0" /> Admin-only actions are locked for this role. View-only monitoring remains available.
+        </div>
+      )}
+
+      {activeContent[activeTab]}
+    </main>
+  );
+}
+
+export default BusinessManagementModule;
