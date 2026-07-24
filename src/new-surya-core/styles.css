@@ -1,0 +1,191 @@
+.new-surya-core-root {
+  min-width: 320px;
+  min-height: 100vh;
+  overflow-x: hidden;
+  color: #0c0a09;
+  background: #fafaf9;
+  font-family: "DM Sans", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+.new-surya-core-root *,
+.new-surya-core-root *::before,
+.new-surya-core-root *::after {
+  box-sizing: border-box;
+}
+
+.new-surya-core-root button,
+.new-surya-core-root input,
+.new-surya-core-root select,
+.new-surya-core-root textarea {
+  font: inherit;
+  letter-spacing: 0;
+}
+
+.new-surya-core-root button,
+.new-surya-core-root a,
+.new-surya-core-root select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.new-surya-core-root button,
+.new-surya-core-root a,
+.new-surya-core-root [role="button"] {
+  cursor: pointer;
+}
+
+.new-surya-core-root :is(button, a, select, input, textarea):focus-visible {
+  outline: 2px solid #d4a64f;
+  outline-offset: 2px;
+}
+
+.new-surya-core-root .grain-field {
+  background: #fafaf9;
+}
+
+.new-surya-core-root .ticket,
+.new-surya-core-root .ticket-dark {
+  position: relative;
+  border: 1px solid #e2e8f0;
+  border-radius: .5rem;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(15 23 42 / .05);
+}
+
+.new-surya-core-root .ticket-dark {
+  border-color: #1e293b;
+  background: #0f172a;
+}
+
+.new-surya-core-root .stamp {
+  display: inline-flex;
+  align-items: center;
+  gap: .25rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  padding: .25rem .6rem;
+  background: #f8fafc;
+  color: #475569;
+  font-size: .68rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.new-surya-core-root .no-scrollbar::-webkit-scrollbar { display: none; }
+.new-surya-core-root .no-scrollbar { scrollbar-width: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .new-surya-core-root *,
+  .new-surya-core-root *::before,
+  .new-surya-core-root *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media print {
+  .new-surya-core-root .no-print { display: none !important; }
+  .new-surya-core-root .ticket,
+  .new-surya-core-root .ticket-dark {
+    box-shadow: none !important;
+    border: 1px solid #ddd;
+  }
+}
+
+/* Premium New Surya treatment for all fully integrated operational modules. */
+.new-surya-core-root .new-surya-integrated-module {
+  --ns-panel-border: rgba(217, 119, 6, .16);
+  --ns-panel-shadow: 0 18px 45px rgba(69, 39, 10, .08);
+  background:
+    radial-gradient(circle at 12% 0%, rgba(251, 191, 36, .10), transparent 28rem),
+    radial-gradient(circle at 100% 20%, rgba(16, 185, 129, .08), transparent 30rem),
+    linear-gradient(180deg, rgba(255, 253, 248, .96), rgba(250, 250, 249, .94));
+}
+
+.new-surya-core-root .new-surya-integrated-module :is(.bg-white, [class*="bg-white/"]) {
+  border-color: var(--ns-panel-border);
+}
+
+.new-surya-core-root .new-surya-integrated-module :is(.rounded-3xl, .rounded-\[2rem\], .rounded-2xl) {
+  box-shadow: var(--ns-panel-shadow);
+}
+
+.new-surya-core-root .new-surya-integrated-module :is(input, select, textarea) {
+  border-color: rgba(180, 83, 9, .18) !important;
+  background-color: rgba(255, 255, 255, .92) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .95), 0 5px 16px rgba(69, 39, 10, .035);
+}
+
+.new-surya-core-root .new-surya-integrated-module :is(input, select, textarea):focus {
+  border-color: rgba(217, 119, 6, .55) !important;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, .12), 0 8px 22px rgba(69, 39, 10, .06) !important;
+}
+
+.new-surya-core-root .new-surya-integrated-module button:not([disabled]) {
+  transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease, background-color 140ms ease;
+}
+
+.new-surya-core-root .new-surya-integrated-module button:not([disabled]):active {
+  transform: translateY(1px) scale(.99);
+}
+
+.new-surya-core-root .new-surya-integrated-module table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.new-surya-core-root .new-surya-integrated-module thead {
+  background: linear-gradient(180deg, rgba(255, 251, 235, .96), rgba(255, 247, 237, .9));
+}
+
+.new-surya-core-root .new-surya-integrated-module tbody tr {
+  transition: background-color 140ms ease;
+}
+
+.new-surya-core-root .new-surya-integrated-module tbody tr:hover {
+  background-color: rgba(255, 251, 235, .76);
+}
+
+.new-surya-core-root .new-surya-integrated-module ::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+.new-surya-core-root .new-surya-integrated-module ::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: linear-gradient(#d6a348, #8c5b22) padding-box;
+}
+
+.new-surya-core-root .new-surya-integrated-module ::-webkit-scrollbar-track {
+  background: rgba(245, 238, 226, .55);
+}
+
+@media (prefers-color-scheme: dark) {
+  .new-surya-core-root .new-surya-integrated-module {
+    --ns-panel-border: rgba(251, 191, 36, .16);
+    --ns-panel-shadow: 0 20px 48px rgba(0, 0, 0, .2);
+  }
+}
+
+/* Complete workflow surfaces mounted inside the five New Surya dashboards. */
+.integrated-feature-surface {
+  width: 100%;
+  min-width: 0;
+}
+.integrated-feature-surface > .dashboard-screen,
+.integrated-feature-surface .dashboard-screen {
+  min-height: auto;
+}
+.integrated-feature-surface .fixed.bottom-0,
+.integrated-feature-surface .sticky.bottom-0 {
+  z-index: 35;
+}
+@media (max-width: 767px) {
+  .integrated-feature-surface {
+    overflow-x: clip;
+  }
+}
