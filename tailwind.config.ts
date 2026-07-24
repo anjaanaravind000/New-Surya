@@ -1,4 +1,5 @@
 import type { Config } from "tailwindcss";
+import tailwindcssAnimate from "tailwindcss-animate";
 
 export default {
 	darkMode: ["class"],
@@ -19,17 +20,10 @@ export default {
 		},
 		extend: {
 			fontFamily: {
-				display: ['Archivo', 'ui-sans-serif', 'sans-serif'],
-				body: ['Inter', 'ui-sans-serif', 'sans-serif'],
-				ticket: ['"IBM Plex Mono"', 'ui-monospace', 'monospace'],
+				display: ['Cormorant Garamond', 'serif'],
+				body: ['Source Sans 3', 'sans-serif'],
 			},
 			colors: {
-				ink: { DEFAULT: '#1F2933', 700: '#243B53', 600: '#334E68' },
-				paper: { DEFAULT: '#FFFFFF', dim: '#F4F7F6' },
-				ember: { DEFAULT: '#C44536', 600: '#A7342B', 700: '#84261F' },
-				oxblood: { DEFAULT: '#B42318' },
-				tgreen: { DEFAULT: '#047857' },
-				slatewash: { DEFAULT: '#64748B' },
 				border: 'hsl(var(--border))',
 				input: 'hsl(var(--input))',
 				ring: 'hsl(var(--ring))',
@@ -75,9 +69,6 @@ export default {
 				}
 			},
 			borderRadius: {
-				'3xl': '0.5rem',
-				'2xl': '0.5rem',
-				xl: '0.5rem',
 				lg: 'var(--radius)',
 				md: 'calc(var(--radius) - 2px)',
 				sm: 'calc(var(--radius) - 4px)'
@@ -106,5 +97,5 @@ export default {
 			}
 		}
 	},
-	plugins: [],
+	plugins: [tailwindcssAnimate],
 } satisfies Config;
