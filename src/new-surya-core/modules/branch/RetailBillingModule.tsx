@@ -1,0 +1,2695 @@
+import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useOrderStore } from '@/stores/orderStore';
+import { useShallow } from 'zustand/react/shallow'; // STORE-01 FIX: granular selectors
+import { useMenuStore } from '@/stores/menuStore';
+import { useAuthStore } from '@/stores/authStore';
+import { useBranchStore } from '@/branch/branchStore';
+import type { CreditSale } from '@/branch/branchStore';
+import type { Branch } from '@/branch/types';
+import { useBranchOpsStore } from '@/branch/branchOpsStore';
+import { cn, formatCurrency, formatTime } from '@/lib/utils';
+import {
+  Inbox, Wifi, Plus, Minus, Search, X,
+  ShoppingBag, MapPin, User as UserIcon, StickyNote,
+  ChevronDown, ChevronRight, AlertCircle, Trash2, Receipt,
+  QrCode, UserCheck, IndianRupee, Clock, CheckCircle2,
+  CreditCard, Banknote, Smartphone, Wallet, Loader2,
+  Edit3, UtensilsCrossed, Printer, Calendar, Building2, Bell, RefreshCw,
+} from 'lucide-react';
+import OrderCard from '@/components/features/OrderCard';
+import CategoryFilter from '@/components/features/CategoryFilter';
+import MenuItemCard from '@/components/features/MenuItemCard';
+import type { OrderStatus, OrderType, PaymentType, PaymentBreakdown, Order } from '@/types';
+import { TABLE_NUMBERS, MENU_CATEGORIES } from '@/constants/config';
+import EmptyState from '@/components/ui/EmptyState';
+import { supabase } from '@/lib/supabase';
+import { businessDate } from '@/lib/businessDate';
+import { useNotificationStore } from '@/bakery/notificationStore';
+import { useSearchParams } from 'react-router-dom';
+
+// -- Branch Credit Panel (Biller view - scope controlled by caller) -----------
+const ALL_BRANCHES: Branch[] = ['Retail', 'SECONDARY_OUTLET', 'PRIMARY_OUTLET', 'Wholesale'];
+
+const BRANCH_BADGE: Record<Branch, string> = {
+  Retail:  'bg-green-100 text-green-700 border-green-200',
+  SECONDARY_OUTLET: 'bg-blue-100 text-blue-700 border-blue-200',
+  PRIMARY_OUTLET:   'bg-amber-100 text-amber-700 border-amber-200',
+  Wholesale: 'bg-teal-100 text-teal-700 border-teal-200',
+};
+
+// -- Notify Secondary Outlet Management + Admin whenever a new credit sale is recorded ---------
+async function notifyCreditSale(params: {
+  customerName: string;
+  amount: number;
+  billNo: string;
+  branch: Branch;
+  soldBy: string;
+  dueDate?: string;
+}) {
+  // Best-effort fire-and-forget - biller UI must never block on this
+  try {
+    const { pushCreditSale } = useNotificationStore.getState();
+    await pushCreditSale(params);
+  } catch (error) {
+    console.error('Credit-sale notification failed', error);
+  }
+}
+
+const ROLE_BRANCHES: Record<string, Branch[]> = {
+  executive: ALL_BRANCHES,
+  admin: ALL_BRANCHES,
+  billing: ['Retail'],
+  biller: ['Retail'],
+  branch_incharge_secondary: ['SECONDARY_OUTLET'],
+  branch_secondary: ['SECONDARY_OUTLET'],
+  branch_incharge_primary: ['PRIMARY_OUTLET'],
+  branch_primary: ['PRIMARY_OUTLET'],
+  branch_wholesale: ['Wholesale'],
+  wholesale_biller: ['Wholesale'],
+};
+
+function todayIso(value = new Date()) {
+  const now = value;
+  const tzOffset = now.getTimezoneOffset() * 60000;
+  return new Date(now.getTime() - tzOffset).toISOString().slice(0, 10);
+}
+
+function useRetailCounterOpened() {
+  const counterOpenings = useBranchOpsStore((s) => s.counterOpenings);
+  const cashierClosures = useBranchOpsStore((s) => s.cashierClosures);
+  const [remoteCounter, setRemoteCounter] = useState({ opened: false, closed: false });
+  const today = todayIso();
+  const localClosed = cashierClosures.some(
+    (record) => record.branch === 'Retail' && todayIso(new Date(record.createdAt)) === today,
+  );
+
+  useEffect(() => {
+    let alive = true;
+    const checkCounterOpening = async () => {
+      if (!useBranchOpsStore.persist.hasHydrated()) {
+        await useBranchOpsStore.persist.rehydrate();
+      }
+      const [{ data: closureRows, error: closureError }, { data: opRows, error: opError }] = await Promise.all([
+        supabase
+          .from('branch_daily_closures')
+          .select('status')
+          .eq('branch', 'Retail')
+          .eq('closure_date', today),
+        supabase
+          .from('branch_operation_records')
+          .select('record_id')
+          .eq('branch', 'Retail')
+          .eq('record_type', 'counter_opening')
+          .eq('record_no', today)
+          .limit(1),
+      ]);
+      if (!alive) return;
+      const formalRows = !closureError && Array.isArray(closureRows) ? closureRows : [];
+      const closed = formalRows.some((row) => String(row.status || '').toLowerCase() === 'finalized');
+      const opened =
+        formalRows.some((row) => String(row.status || '').toLowerCase() === 'draft') ||
+        (!opError && Array.isArray(opRows) && opRows.length > 0);
+      setRemoteCounter({ opened, closed });
+    };
+    void checkCounterOpening();
+    return () => {
+      alive = false;
+    };
+  }, [today]);
+
+  const localOpened = counterOpenings.some((record) => record.branch === 'Retail' && record.date === today);
+  if (localClosed || remoteCounter.closed) return false;
+  return remoteCounter.opened || localOpened;
+}
+
+function BillerCreditTab() {
+  const { currentUser } = useAuthStore();
+  const branches = useMemo<Branch[]>(() => ROLE_BRANCHES[currentUser?.role ?? ''] ?? [], [currentUser?.role]);
+  const { creditSales: allCreditSales, settleCreditSale, fetchCreditSales } = useBranchStore();
+
+  const branchesKey = branches.join('|');
+  useEffect(() => {
+    branches.forEach((branch) => void fetchCreditSales(branch));
+  }, [fetchCreditSales, branchesKey, branches]);
+
+  const [filter, setFilter] = useState<'all' | 'pending' | 'partial' | 'settled'>('pending');
+  const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [settling, setSettling] = useState<string | null>(null);
+  const [settleAmts, setSettleAmts] = useState<Record<string, string>>({});
+  const [settleModes, setSettleModes] = useState<Record<string, 'cash' | 'upi' | 'card'>>({});
+  const [error, setError] = useState('');
+
+  // Flatten all branch credit sales with branch tag
+  const allSales: (CreditSale & { branch: Branch })[] = useMemo(() =>
+    branches.flatMap(b =>
+      (allCreditSales?.[b] || []).map(cs => ({ ...cs, branch: b }))
+    ).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [allCreditSales, branches]
+  );
+
+  const filtered = useMemo(() => {
+    let result = allSales;
+    if (branchFilter !== 'all') result = result.filter(cs => cs.branch === branchFilter);
+    if (filter !== 'all') result = result.filter(cs => cs.status === filter);
+    return result;
+  }, [allSales, filter, branchFilter]);
+
+  const totalDue = useMemo(() =>
+    filtered.filter(cs => cs.status !== 'settled').reduce((s, c) => s + c.creditAmount, 0),
+    [filtered]
+  );
+
+  const pendingCount = filtered.filter(cs => cs.status !== 'settled').length;
+
+  const handleSettle = async (cs: CreditSale & { branch: Branch }) => {
+    const amt = parseFloat(settleAmts[cs.id] || '0');
+    if (isNaN(amt) || amt <= 0) { setError('Enter a valid amount'); return; }
+    if (amt > cs.creditAmount) { setError('Amount exceeds balance due'); return; }
+    setSettling(cs.id); setError('');
+    const mode = settleModes[cs.id];
+    if (!mode) { setError('Select Cash, UPI, or Card'); setSettling(null); return; }
+    const err = await settleCreditSale(cs.branch, cs.id, amt, { mode, collectedBy: currentUser?.username ?? 'Biller', collectedRole: currentUser?.role ?? null });
+    setSettling(null);
+    if (err) setError(err);
+    else setSettleAmts(prev => { const n = { ...prev }; delete n[cs.id]; return n; });
+  };
+
+  const statusColors: Record<string, string> = {
+    pending: 'bg-red-100 text-red-700 border-red-200',
+    partial: 'bg-amber-100 text-amber-700 border-amber-200',
+    settled: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  };
+
+  return (
+    <div className="p-3 space-y-3 pb-8">
+      {/* Summary banner */}
+      <div className="bg-gradient-to-br from-orange-50 to-red-50 border border-orange-200 rounded-2xl p-4">
+        <p className="text-xs font-bold text-orange-700 uppercase tracking-widest mb-1">Total Credit Outstanding</p>
+        <p className="font-display text-3xl font-bold text-orange-600 tabular-nums">
+          Rs {totalDue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+        </p>
+        <p className="text-xs text-muted-foreground mt-1">
+          {pendingCount} open account{pendingCount !== 1 ? 's' : ''}  -  All Branches
+        </p>
+        {/* Per-branch outstanding summary */}
+        <div className="flex gap-2 mt-3 flex-wrap">
+          {branches.map(b => {
+            const due = (allCreditSales?.[b] || [])
+              .filter(cs => cs.status !== 'settled')
+              .reduce((s, c) => s + c.creditAmount, 0);
+            if (due <= 0) return null;
+            return (
+              <div key={b} className={cn('flex items-center gap-1.5 px-2.5 py-1 rounded-xl border text-[11px] font-bold', BRANCH_BADGE[b])}>
+                <Building2 className="size-3" />{b}: Rs {due.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {error && (
+        <div className="flex items-center gap-2 bg-destructive/10 border border-destructive/20 px-3 py-2 rounded-xl text-xs text-destructive">
+          <AlertCircle className="size-3 shrink-0" />{error}
+        </div>
+      )}
+
+      {/* Branch filter - only shown when more than one branch is in scope */}
+      {branches.length > 1 && (
+      <div className="flex gap-1.5 flex-wrap">
+        <button onClick={() => setBranchFilter('all')}
+          className={cn('px-3 py-1.5 rounded-full text-[11px] font-bold border transition',
+            branchFilter === 'all' ? 'bg-foreground text-background border-transparent' : 'bg-card border-border text-muted-foreground')}>
+          All Branches
+        </button>
+        {branches.map(b => (
+          <button key={b} onClick={() => setBranchFilter(b)}
+            className={cn('px-3 py-1.5 rounded-full text-[11px] font-bold border transition',
+              branchFilter === b ? `${BRANCH_BADGE[b]} border-transparent` : 'bg-card border-border text-muted-foreground')}>
+            {b}
+          </button>
+        ))}
+      </div>
+      )}
+
+      {/* Status filter pills */}
+      <div className="flex gap-1.5 flex-wrap">
+        {(['all', 'pending', 'partial', 'settled'] as const).map(f => (
+          <button key={f} onClick={() => setFilter(f)}
+            className={cn('px-3 py-1.5 rounded-full text-[11px] font-bold border transition',
+              filter === f ? 'bg-amber-500 text-white border-transparent' : 'bg-card border-border text-muted-foreground')}>
+            {f.charAt(0).toUpperCase() + f.slice(1)}
+            {f !== 'all' && (
+              <span className="ml-1 opacity-70">
+                ({allSales.filter(cs => (branchFilter === 'all' || cs.branch === branchFilter) && cs.status === f).length})
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Credit sale cards */}
+      {filtered.length === 0 ? (
+        <div className="flex flex-col items-center py-16 gap-3 text-muted-foreground">
+          <div className="size-16 rounded-2xl bg-muted flex items-center justify-center">
+            <Wallet className="size-8 opacity-25" />
+          </div>
+          <p className="text-sm font-body">No {filter !== 'all' ? filter : ''} credit sales</p>
+          <p className="text-xs font-body text-muted-foreground/70">
+            Credit sales recorded via branch billing will appear here
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map(cs => (
+            <div key={cs.id} className="bg-card border-2 border-border rounded-2xl overflow-hidden">
+              {/* Card header */}
+              <div className="px-4 py-3 flex items-center justify-between">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-body font-bold text-sm text-foreground truncate">{cs.customerName || '-'}</span>
+                    <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full border', statusColors[cs.status])}>
+                      {cs.status.toUpperCase()}
+                    </span>
+                    <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full border', BRANCH_BADGE[cs.branch])}>
+                      {cs.branch}
+                    </span>
+                  </div>
+                  {cs.customerPhone && <p className="text-xs text-muted-foreground mt-0.5">{cs.customerPhone}</p>}
+                  <p className="text-[10px] text-muted-foreground mt-0.5">
+                    Bill #{cs.billNo.split('-').pop()}  -  {new Date(cs.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}  -  {cs.soldBy}
+                  </p>
+                  {cs.dueDate && (
+                    <p className="text-[10px] text-amber-600 font-semibold mt-0.5">
+                      Due: {new Date(cs.dueDate + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                    </p>
+                  )}
+                </div>
+                <div className="text-right ml-3 shrink-0">
+                  <p className="text-[10px] text-muted-foreground">Due</p>
+                  <p className="font-display font-bold text-lg text-red-600 tabular-nums">
+                    Rs {cs.creditAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  </p>
+                </div>
+              </div>
+
+              {/* Expand/collapse */}
+              <button onClick={() => setExpanded(prev => prev === cs.id ? null : cs.id)}
+                className="w-full flex items-center justify-between px-4 py-2 bg-muted/30 border-t border-border text-xs text-muted-foreground">
+                <span>Total: Rs {cs.subtotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}  -  Paid: Rs {cs.amountPaid.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                {expanded === cs.id ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+              </button>
+
+              {expanded === cs.id && (
+                <div className="px-4 py-3 border-t border-border/50 space-y-1.5">
+                  <p className="text-[10px] font-bold text-muted-foreground uppercase mb-1">Items</p>
+                  {cs.items.map((item, i) => (
+                    <div key={i} className="flex justify-between text-xs">
+                      <span className="text-foreground">{item.quantity}{item.sellUnit === 'kg' ? 'kg' : 'x'} {item.itemName}</span>
+                      <span className="font-bold tabular-nums">Rs {item.lineTotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                    </div>
+                  ))}
+                  {cs.notes && <p className="text-xs text-muted-foreground italic mt-1">"{cs.notes}"</p>}
+                </div>
+              )}
+
+              {/* Collect payment */}
+              {cs.status !== 'settled' && (
+                <div className="px-4 py-3 border-t border-border bg-muted/10 space-y-2">
+                  <p className="text-[10px] font-bold text-muted-foreground uppercase">Collect Payment</p>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {(['cash', 'upi', 'card'] as const).map((mode) => (
+                      <button key={mode} type="button" onClick={() => { setSettleModes(prev => ({ ...prev, [cs.id]: mode })); setError(''); }}
+                        className={cn('py-1.5 rounded-lg border text-[11px] font-bold uppercase', settleModes[cs.id] === mode ? 'bg-amber-500 text-white border-amber-500' : 'bg-card border-border text-muted-foreground')}>
+                        {mode}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <IndianRupee className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
+                      <input type="number" placeholder={`Max Rs ${cs.creditAmount.toFixed(2)}`}
+                        value={settleAmts[cs.id] || ''}
+                        onChange={e => { setSettleAmts(prev => ({ ...prev, [cs.id]: e.target.value })); setError(''); }}
+                        className="w-full pl-7 pr-2 py-2 rounded-xl bg-card border border-border text-sm font-body focus:outline-none focus:ring-2 focus:ring-amber-400/40" />
+                    </div>
+                    <button onClick={() => handleSettle(cs)} disabled={settling === cs.id || !settleAmts[cs.id]}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-500 text-white text-sm font-bold active:scale-95 disabled:opacity-50 transition">
+                      {settling === cs.id ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />}
+                      {settling === cs.id ? '...' : 'Collect'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const STATUS_TABS: { key: OrderStatus; label: string; dotColor: string }[] = [
+  { key: 'pending', label: 'New', dotColor: 'bg-amber-500' },
+  { key: 'served', label: 'Completed', dotColor: 'bg-emerald-500' },
+  { key: 'cancelled', label: 'Cancelled', dotColor: 'bg-red-500' },
+];
+
+const QUICK_NOTES = [
+  'Less spicy', 'Extra spicy', 'No onion', 'No garlic',
+  'Less oil', 'Extra chutney', 'Pack separately', 'Allergy - check ingredients',
+];
+
+
+const PAYMENT_LABELS_PRINT: Record<string, string> = {
+  cash: 'Cash',
+  upi: 'UPI',
+  card: 'Card',
+  part_payment: 'Split Payment',
+  advance: 'Advance',
+  credit: 'Credit',
+  unpaid: 'Unpaid',
+};
+
+function safeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function printCounterSlip(title: string, bodyHtml: string) {
+  const win = window.open('', '_blank', 'width=420,height=720');
+  if (!win) return;
+  win.document.write(`<!DOCTYPE html><html><head><title>${safeHtml(title)}</title>
+<style>
+@page{margin:4mm;size:80mm auto}*{box-sizing:border-box}body{margin:0;width:76mm;font-family:'Courier New',monospace;color:#000;font-size:12px;line-height:1.22}.c{text-align:center}.r{text-align:right}.b{font-weight:900}.muted{color:#444}.big{font-size:16px}.shop{font-size:17px;font-weight:900}.dash{border-top:1px dashed #000;margin:6px 0}.solid{border-top:2px solid #000;margin:6px 0}.row{display:flex;justify-content:space-between;gap:8px}.mt{margin-top:6px}.paid{font-size:15px;font-weight:900;text-align:center;margin-bottom:3px}.meta{display:grid;grid-template-columns:1fr 1fr;gap:2px 8px}.meta .wide{grid-column:1/-1}.pick{text-align:center;font-size:16px;font-weight:900}table{width:100%;border-collapse:collapse}td,th{padding:3px 1px;vertical-align:top}th{text-align:left;border-bottom:1px solid #000}tbody tr.item-row td{border-bottom:1px solid #ddd}.num{text-align:right}.grand{display:flex;justify-content:space-between;align-items:center;font-size:18px;font-weight:900;padding:6px 0}.thanks{text-align:center;font-size:14px;margin-top:8px}.small{font-size:10px}
+</style></head><body>${bodyHtml}</body></html>`);
+  win.document.close();
+  setTimeout(() => { win.focus(); win.print(); win.close(); }, 350);
+}
+
+function moneyHtml(value: number): string {
+  return `&#8377;${Number(value || 0).toFixed(2)}`;
+}
+
+function billNo(order: Order, prefix = ''): string {
+  return `${prefix}${String(order.orderNumber).padStart(4, '0')}`;
+}
+
+function receiptDate(value?: string) {
+  const d = value ? new Date(value) : new Date();
+  return Number.isNaN(d.getTime())
+    ? { date: '-', time: '-' }
+    : {
+        date: d.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: '2-digit' }).replace(/\//g, '/'),
+        time: d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false }),
+      };
+}
+
+function retailHeader(status: string, slipTitle: string): string {
+  return `
+    <div class="paid">${safeHtml(status)}</div>
+    <div class="c">
+      <div class="shop">New Surya</div>
+      <div>#109/1C, Wholesale main Road, Berigai,</div>
+      <div>Soolagiri TK, Krishnagiri DT,</div>
+      <div>Tamilnadu 635105</div>
+      <div class="mt">GST No: 33AAZFV1266C1ZZ</div>
+      <div>FSSAI No: 12425011000098</div>
+    </div>
+    <div class="solid"></div>
+    <div class="c b big">${safeHtml(slipTitle)}</div>
+  `;
+}
+
+function taxableAmount(total: number): number {
+  return Math.round((Number(total || 0) / 1.05) * 100) / 100;
+}
+
+function gstParts(total: number) {
+  const taxable = taxableAmount(total);
+  const tax = Math.max(0, Number(total || 0) - taxable);
+  const cgst = Math.round((tax / 2) * 100) / 100;
+  const sgst = Math.round((tax - cgst) * 100) / 100;
+  return { taxable, cgst, sgst };
+}
+
+function orderItemsRows(order: Pick<Order, 'items'>): string {
+  return order.items.map((ci) => {
+    const grossLine = ci.menuItem.price * ci.quantity;
+    const netLine = taxableAmount(grossLine);
+    const netRate = ci.quantity > 0 ? netLine / ci.quantity : 0;
+    return `
+      <tr class="item-row">
+        <td>${safeHtml(ci.menuItem.name)}</td>
+        <td class="num">${ci.quantity}</td>
+        <td class="num">${netRate.toFixed(2)}</td>
+        <td class="num">${netLine.toFixed(2)}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function receiptItemTable(order: Order): string {
+  return `
+    <table>
+      <thead><tr><th>Item</th><th class="num">Qty.</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
+      <tbody>${orderItemsRows(order)}</tbody>
+    </table>
+  `;
+}
+
+function receiptTotals(order: Order, payable: number, extraRows = ''): string {
+  const taxableTotal = order.items.reduce((sum, ci) => sum + taxableAmount(ci.menuItem.price * ci.quantity), 0);
+  const gst = gstParts(order.items.reduce((sum, ci) => sum + ci.menuItem.price * ci.quantity, 0));
+  const totalQty = order.items.reduce((sum, ci) => sum + ci.quantity, 0);
+  const parcelCharges = order.parcelCharges ?? 0;
+  return `
+    <div class="solid"></div>
+    <div class="row"><span>Total Qty: ${totalQty}</span><span>Sub Total</span><span>${taxableTotal.toFixed(2)}</span></div>
+    <div class="row"><span></span><span>CGST@2.5 2.5%</span><span>${gst.cgst.toFixed(2)}</span></div>
+    <div class="row"><span></span><span>SGST@2.5 2.5%</span><span>${gst.sgst.toFixed(2)}</span></div>
+    ${parcelCharges > 0 ? `<div class="row"><span></span><span>Parcel</span><span>${parcelCharges.toFixed(2)}</span></div>` : ''}
+    ${extraRows}
+    <div class="solid"></div>
+    <div class="grand"><span>Grand Total</span><span>${moneyHtml(payable)}</span></div>
+  `;
+}
+
+function dateTimeLabel(value?: string): string {
+  if (!value) return '-';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function printPaidBill(order: Order, copyType: 'original' | 'duplicate' = 'original') {
+  const paidBy = PAYMENT_LABELS_PRINT[order.paymentType] || order.paymentType;
+  const breakdownRows = order.paymentBreakdown ? `
+    <div class="row"><span>Cash</span><span class="b">${moneyHtml(order.paymentBreakdown.cash || 0)}</span></div>
+    <div class="row"><span>UPI</span><span class="b">${moneyHtml(order.paymentBreakdown.upi || 0)}</span></div>
+    <div class="row"><span>Card</span><span class="b">${moneyHtml(order.paymentBreakdown.card || 0)}</span></div>
+  ` : '';
+  const dt = receiptDate(order.createdAt);
+  printCounterSlip(`Bill ${order.orderNumber}`, `
+    ${retailHeader('PAID', copyType === 'duplicate' ? 'DUPLICATE BILL' : 'TAX INVOICE')}
+    <div class="row"><span>Name:</span><span>${safeHtml(order.customerName || '')}</span></div>
+    <div class="solid"></div>
+    <div class="meta">
+      <div>Date: ${safeHtml(dt.date)}</div><div class="pick">${order.orderType === 'dine_in' ? `TABLE ${order.tableNumber ?? '-'}` : 'Pick UP'}</div>
+      <div>${safeHtml(dt.time)}</div><div>Bill No.: ${safeHtml(billNo(order))}</div>
+      <div class="wide">Cashier: ${safeHtml(order.billedBy || order.createdBy)}</div>
+    </div>
+    <div class="dash"></div>
+    ${receiptItemTable(order)}
+    ${receiptTotals(order, order.total)}
+    <div>Paid via ${safeHtml(paidBy)}</div>
+    ${breakdownRows}
+    <div class="solid"></div>
+    <div class="thanks">Thank You & Visit Again...!!!</div>
+  `);
+}
+
+function printAdvanceSalesSlip(order: Order, mobile: string, orderDate: string, billPerson: string) {
+  const advance = order.advanceAmount ?? 0;
+  const fullAmount = order.fullAmount ?? order.subtotal;
+  const balance = order.balanceDue ?? Math.max(0, fullAmount - advance);
+  const dt = receiptDate(order.createdAt);
+  printCounterSlip(`Sales Order ${order.orderNumber}`, `
+    ${retailHeader(balance <= 0 ? 'PAID' : 'ADVANCE PAID', 'SALES ORDER SLIP')}
+    <div class="row"><span>Name:</span><span>${safeHtml(order.customerName || '-')}</span></div>
+    <div class="row"><span>Mobile:</span><span>${safeHtml(mobile || '-')}</span></div>
+    <div class="solid"></div>
+    <div class="meta">
+      <div>Date: ${safeHtml(orderDate || dt.date)}</div><div class="pick">Pick UP</div>
+      <div>${safeHtml(dt.time)}</div><div>Bill No.: SO-${safeHtml(billNo(order))}</div>
+      <div class="wide">Cashier: ${safeHtml(billPerson || order.billedBy || order.createdBy)}</div>
+      <div class="wide">Delivery: ${safeHtml(dateTimeLabel(order.deliveryDate))}</div>
+    </div>
+    <div class="dash"></div>
+    ${receiptItemTable(order)}
+    ${receiptTotals(order, fullAmount, `
+      <div class="row"><span></span><span>Tender Amount</span><span>${advance.toFixed(2)}</span></div>
+      <div class="row"><span></span><span>Change Due</span><span>${balance.toFixed(2)}</span></div>
+    `)}
+    <div>Paid via ${safeHtml(PAYMENT_LABELS_PRINT[order.advancePaidBy || ''] || order.advancePaidBy || '-')}</div>
+    <div>Advances from Sales Order: ${moneyHtml(advance)}</div>
+    <div class="solid"></div>
+    <div class="thanks">Thank You & Visit Again...!!!</div>
+  `);
+}
+
+function printAdvanceClosureBill(order: Order, balancePaymentType: string, balancePaidBy: string) {
+  const advance = order.advanceAmount ?? 0;
+  const fullAmount = order.fullAmount ?? order.subtotal;
+  const paidNow = order.balanceDue ?? Math.max(0, fullAmount - advance);
+  const dt = receiptDate(new Date().toISOString());
+  printCounterSlip(`Advance Closure ${order.orderNumber}`, `
+    ${retailHeader('PAID', 'ADVANCE FINAL BILL')}
+    <div class="row"><span>Name:</span><span>${safeHtml(order.customerName || '-')}</span></div>
+    <div class="solid"></div>
+    <div class="meta">
+      <div>Date: ${safeHtml(dt.date)}</div><div class="pick">Pick UP</div>
+      <div>${safeHtml(dt.time)}</div><div>Bill No.: ${safeHtml(billNo(order))}</div>
+      <div class="wide">Cashier: ${safeHtml(balancePaidBy)}</div>
+      <div class="wide">Delivery: ${safeHtml(dateTimeLabel(order.deliveryDate))}</div>
+    </div>
+    <div class="dash"></div>
+    ${receiptItemTable(order)}
+    ${receiptTotals(order, fullAmount, `
+      <div class="row"><span></span><span>Advance Paid</span><span>${advance.toFixed(2)}</span></div>
+      <div class="row"><span></span><span>Paid Now</span><span>${paidNow.toFixed(2)}</span></div>
+    `)}
+    <div>Paid via ${safeHtml(PAYMENT_LABELS_PRINT[balancePaymentType] || balancePaymentType)}</div>
+    <div class="solid"></div>
+    <div class="thanks">Thank You & Visit Again...!!!</div>
+  `);
+}
+
+function printCreditBill(order: Order, phone: string, dueDate: string) {
+  const dt = receiptDate(order.createdAt);
+  printCounterSlip(`Credit Bill ${order.orderNumber}`, `
+    ${retailHeader('CREDIT', 'CREDIT BILL')}
+    <div class="row"><span>Name:</span><span>${safeHtml(order.customerName || '-')}</span></div>
+    <div class="row"><span>Mobile:</span><span>${safeHtml(phone || '-')}</span></div>
+    <div class="row"><span>Due Date:</span><span>${safeHtml(dueDate || '-')}</span></div>
+    <div class="solid"></div>
+    <div class="meta">
+      <div>Date: ${safeHtml(dt.date)}</div><div class="pick">${order.orderType === 'dine_in' ? `TABLE ${order.tableNumber ?? '-'}` : 'Pick UP'}</div>
+      <div>${safeHtml(dt.time)}</div><div>Bill No.: CR-${safeHtml(billNo(order))}</div>
+      <div class="wide">Cashier: ${safeHtml(order.billedBy || order.createdBy)}</div>
+    </div>
+    <div class="dash"></div>
+    ${receiptItemTable(order)}
+    ${receiptTotals(order, order.total)}
+    <div>Payment Details: Credit</div>
+    <div>Credit Due: ${moneyHtml(order.total)}</div>
+    <div class="solid"></div>
+    <div class="thanks">Thank You & Visit Again...!!!</div>
+  `);
+}
+
+type SourceFilter = 'all' | 'staff' | 'qr';
+type DirectPaymentMethod = 'cash' | 'upi' | 'card';
+type BillPaymentMethod = DirectPaymentMethod | 'part_payment';
+type SplitPaymentInputs = Record<DirectPaymentMethod, string>;
+
+// -- Advance Order Card --------------------------------------------------------
+function AdvanceOrderCard({ order }: { order: Order }) {
+  // STORE-01 FIX: select only actions - stable refs, avoids re-renders from orders/cart changes
+  const { collectBalance, setAdvancePayment, loadOrders } = useOrderStore(
+    useShallow(s => ({
+      collectBalance: s.collectBalance,
+      setAdvancePayment: s.setAdvancePayment,
+      loadOrders: s.loadOrders,
+    }))
+  );
+  const { currentUser } = useAuthStore();
+  const [showCollect, setShowCollect] = useState(false);
+  const [collectMethod, setCollectMethod] = useState<'cash' | 'upi' | 'card' | null>(null);
+  const [collecting, setCollecting] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  const billedBy = currentUser?.displayName || currentUser?.username || '';
+  const advance = order.advanceAmount || 0;
+  const fullBill = order.fullAmount ?? order.subtotal;
+  const balance = order.balanceDue ?? Math.max(0, fullBill - advance);
+
+  const handleCollect = async () => {
+    if (!collectMethod) return;
+    setCollecting(true);
+    try {
+      await collectBalance(order.id, collectMethod, billedBy);
+      // Refresh from Supabase immediately so a settled advance cannot remain visible
+      // because of a stale polling response or another open biller session.
+      await loadOrders(60);
+      printAdvanceClosureBill(order, collectMethod, billedBy);
+      setShowCollect(false);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to collect payment. Please try again.';
+      alert(msg);
+    } finally {
+      setCollecting(false);
+    }
+  };
+
+  const PAYMENT_ICONS: Record<string, React.ReactNode> = {
+    cash: <Banknote className="size-4" />,
+    upi: <Smartphone className="size-4" />,
+    card: <CreditCard className="size-4" />,
+  };
+
+  return (
+    <div className="bg-card rounded-2xl border-2 border-amber-400 overflow-hidden shadow-md shadow-amber-50">
+      {/* Header */}
+      <div className="bg-amber-50 px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <span className="font-display text-2xl font-bold text-foreground">
+            #{String(order.orderNumber).padStart(3, '0')}
+          </span>
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[10px] font-body font-bold px-2 py-0.5 rounded-full border bg-amber-100 text-amber-800 border-amber-300">
+               Advance Paid
+            </span>
+            <span className="text-[10px] font-body text-muted-foreground flex items-center gap-1">
+              <Clock className="size-3" />{formatTime(order.createdAt)}
+            </span>
+          </div>
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          {order.deliveryDate && (
+            <span className="text-[10px] font-body font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 border border-blue-200 flex items-center gap-1">
+               {new Date(order.deliveryDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+            </span>
+          )}
+          <button onClick={() => setExpanded(!expanded)} className="size-8 rounded-lg bg-amber-100 flex items-center justify-center text-amber-700">
+            {expanded ? <ChevronDown className="size-4 rotate-180" /> : <ChevronDown className="size-4" />}
+          </button>
+        </div>
+      </div>
+
+      {/* Meta row - customer name */}
+      {order.customerName && (
+        <div className="px-4 py-2 flex flex-wrap gap-2 text-xs font-body border-b border-border/50">
+          <span className="flex items-center gap-1 text-muted-foreground"><UserIcon className="size-3" />{order.customerName}</span>
+        </div>
+      )}
+
+      {/* Items (collapsible) */}
+      {expanded && (
+        <div className="px-4 py-3 space-y-1 border-b border-border/50">
+          <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-wide mb-2">Items</p>
+          {order.items.map(ci => (
+            <div key={ci.menuItem.id} className="flex items-center justify-between text-sm">
+              <span className="font-body text-foreground">{ci.quantity}x {ci.menuItem.name}</span>
+              <span className="font-body font-bold text-primary tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</span>
+            </div>
+          ))}
+          {order.notes && (
+            <p className="mt-2 text-xs font-body bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 rounded-lg">Warning: {order.notes}</p>
+          )}
+        </div>
+      )}
+
+      {/* Payment summary */}
+      <div className="px-4 py-3 space-y-2 border-b border-border/50 bg-muted/20">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-body text-muted-foreground">Total Bill</span>
+          <span className="text-sm font-body font-bold tabular-nums">{formatCurrency(fullBill)}</span>
+        </div>
+        {order.discount > 0 && (
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-body text-muted-foreground">Discount</span>
+            <span className="text-sm font-body font-bold text-emerald-600 tabular-nums">-{formatCurrency(order.discount)}</span>
+          </div>
+        )}
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-body text-muted-foreground flex items-center gap-1">
+            <Wallet className="size-3" />Advance Paid
+            {order.advancePaidBy && <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[9px] font-bold ml-1 uppercase">{order.advancePaidBy}</span>}
+          </span>
+          <span className="text-sm font-body font-bold text-amber-600 tabular-nums">-{formatCurrency(advance)}</span>
+        </div>
+        <div className="flex items-center justify-between pt-1 border-t border-border">
+          <span className="text-sm font-body font-bold text-foreground">Balance Due</span>
+          <span className="text-lg font-display font-bold text-red-600 tabular-nums">{formatCurrency(balance)}</span>
+        </div>
+      </div>
+
+      {/* Collect balance action */}
+      {!showCollect ? (
+        <div className="px-4 py-3">
+          <button
+            onClick={() => setShowCollect(true)}
+            className="w-full py-3 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all"
+            style={{ background: 'linear-gradient(135deg,#E07A3A,#C84B0A)', color: 'white', boxShadow: '0 4px 16px rgba(200,75,10,0.3)' }}
+          >
+            <IndianRupee className="size-4" />Collect Balance {formatCurrency(balance)}
+          </button>
+        </div>
+      ) : (
+        <div className="px-4 py-3 space-y-3">
+          <p className="text-xs font-body font-bold text-foreground">Select payment method for balance:</p>
+          <div className="grid grid-cols-3 gap-2">
+            {(['cash', 'upi', 'card'] as const).map(method => (
+              <button
+                key={method}
+                onClick={() => setCollectMethod(method)}
+                className={cn(
+                  'flex flex-col items-center gap-1.5 py-3 rounded-xl border-2 text-xs font-body font-bold transition-all active:scale-95',
+                  collectMethod === method
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border bg-card text-muted-foreground'
+                )}
+              >
+                {PAYMENT_ICONS[method]}
+                {method.toUpperCase()}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => { setShowCollect(false); setCollectMethod(null); }}
+              className="flex-1 py-2.5 rounded-xl border border-border text-sm font-body font-semibold text-foreground active:scale-95"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleCollect}
+              disabled={!collectMethod || collecting}
+              className="flex-1 py-2.5 rounded-xl bg-emerald-600 text-white text-sm font-body font-bold flex items-center justify-center gap-1.5 active:scale-95 disabled:opacity-50"
+            >
+              <CheckCircle2 className="size-4" />
+              {collecting ? 'Saving...' : 'Confirm'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// -- Advance Payment Modal (used inside OrderCard area for ready orders) --------
+export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose: () => void }) {
+  const { currentUser } = useAuthStore();
+  const setAdvancePayment = useOrderStore(s => s.setAdvancePayment);
+  const counterOpenedToday = useRetailCounterOpened();
+  const [advanceAmt, setAdvanceAmt] = useState('');
+  const [method, setMethod] = useState<'cash' | 'upi' | 'card' | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const billedBy = currentUser?.displayName || currentUser?.username || '';
+
+  const handleSave = async () => {
+    if (!counterOpenedToday) { setError('Counter is not opened. Open Cashier Counter, then Counter Open before collecting payment.'); return; }
+    const amt = parseFloat(advanceAmt);
+    if (isNaN(amt) || amt <= 0) { setError('Enter a valid advance amount'); return; }
+    if (amt >= order.total) { setError('Advance must be less than total. Use full payment instead.'); return; }
+    if (!method) { setError('Select payment method'); return; }
+    setSaving(true);
+    try {
+      await setAdvancePayment(order.id, amt, method, billedBy);
+      onClose();
+    } catch {
+      setError('Failed to save - please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+      <div className="relative w-full bg-background rounded-t-3xl shadow-2xl px-5 pt-5 pb-8" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="font-display text-xl font-bold">Collect Advance</h2>
+            <p className="text-xs font-body text-muted-foreground">Order #{String(order.orderNumber).padStart(3, '0')}  -  Total {formatCurrency(order.total)}</p>
+          </div>
+          <button onClick={onClose} aria-label="Close" className="size-9 rounded-full bg-muted flex items-center justify-center"><X className="size-5 text-muted-foreground" /></button>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="text-xs font-body font-bold text-foreground mb-1.5 block">Advance Amount (Rs )</label>
+            <div className="relative">
+              <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+              <input
+                type="number"
+                value={advanceAmt}
+                onChange={e => { setAdvanceAmt(e.target.value); setError(''); }}
+                placeholder="Enter advance amount"
+                className="w-full pl-9 pr-4 py-3 rounded-xl border border-border bg-card text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/50"
+              />
+            </div>
+            {advanceAmt && !isNaN(parseFloat(advanceAmt)) && parseFloat(advanceAmt) > 0 && parseFloat(advanceAmt) < order.total && (
+              <p className="text-xs font-body text-muted-foreground mt-1">
+                Balance due: <span className="font-bold text-red-600">{formatCurrency(order.total - parseFloat(advanceAmt))}</span>
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label className="text-xs font-body font-bold text-foreground mb-1.5 block">Payment Method</label>
+            <div className="grid grid-cols-3 gap-2">
+              {(['cash', 'upi', 'card'] as const).map(m => (
+                <button key={m} onClick={() => setMethod(m)}
+                  className={cn('flex flex-col items-center gap-1.5 py-3 rounded-xl border-2 text-xs font-body font-bold transition-all active:scale-95',
+                    method === m ? 'border-primary bg-primary/10 text-primary' : 'border-border bg-card text-muted-foreground')}>
+                  {m === 'cash' ? <Banknote className="size-4" /> : m === 'upi' ? <Smartphone className="size-4" /> : <CreditCard className="size-4" />}
+                  {m.toUpperCase()}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {error && <p className="text-xs font-body text-destructive flex items-center gap-1"><AlertCircle className="size-3" />{error}</p>}
+          {!counterOpenedToday && (
+            <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs font-black text-amber-800">
+              Counter is not opened today. Open Cashier Counter, then Counter Open first.
+            </p>
+          )}
+
+          <button onClick={handleSave} disabled={saving}
+            className="w-full py-3.5 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all disabled:opacity-60"
+            style={{ background: 'linear-gradient(135deg,#E07A3A,#C84B0A)', color: 'white' }}>
+            <Wallet className="size-4" />
+            {saving ? 'Saving...' : 'Record Advance Payment'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// -- Advance New Order Panel (menu + cart that submits as advance) -------------
+// -- Custom item type (for non-menu items) -------------------------------------
+interface CustomLineItem { id: string; name: string; price: number; qty: number; }
+
+
+function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void; advanceOrders: Order[] }) {
+  const { items, loadMenu } = useMenuStore();
+  const { cart, addToCart, updateCartQuantity, clearCart, getCartTotal, getCartCount, submitAdvanceOrder } = useOrderStore(
+    useShallow(s => ({
+      cart: s.cart,
+      addToCart: s.addToCart,
+      updateCartQuantity: s.updateCartQuantity,
+      clearCart: s.clearCart,
+      getCartTotal: s.getCartTotal,
+      getCartCount: s.getCartCount,
+      submitAdvanceOrder: s.submitAdvanceOrder,
+    }))
+  );
+  const { currentUser } = useAuthStore();
+  const counterOpenedToday = useRetailCounterOpened();
+
+  // Menu picker state
+  const [selectedCategory, setSelectedCategory] = useState('all');
+  const [search, setSearch] = useState('');
+
+  // Custom items state
+  const [customItems, setCustomItems] = useState<CustomLineItem[]>([]);
+  const [customName, setCustomName]   = useState('');
+  const [customPrice, setCustomPrice] = useState('');
+  const [customQty, setCustomQty]     = useState('1');
+  const [customError, setCustomError] = useState('');
+
+  // Order meta
+  const todayInput = businessDate();
+  const defaultBillPerson = currentUser?.displayName || currentUser?.username || '';
+  const [customerName, setCustomerName] = useState('');
+  const [mobileNumber, setMobileNumber] = useState('');
+  const [orderDate, setOrderDate]       = useState(todayInput);
+  const [notes, setNotes]               = useState('');
+  const [deliveryDate, setDeliveryDate] = useState('');
+  const [billPerson, setBillPerson]     = useState(defaultBillPerson);
+  const [advanceAmt, setAdvanceAmt]     = useState('');
+  const [advanceMethod, setAdvanceMethod] = useState<'cash' | 'upi' | 'card' | null>(null);
+  const [isFullPayment, setIsFullPayment] = useState(false);
+  const [advanceError, setAdvanceError] = useState('');
+  const [submitting, setSubmitting]     = useState(false);
+  const [showSuccess, setShowSuccess]   = useState(false);
+  const [itemMode, setItemMode]         = useState<'menu' | 'custom'>('menu');
+
+  useEffect(() => { loadMenu(); }, [loadMenu]);
+
+  const enabledItems = useMemo(() => items.filter(i => i.enabled), [items]);
+  const filteredItems = useMemo(() => {
+    let f = enabledItems;
+    // When searching: search ALL items regardless of selected category
+    if (search.trim()) return f.filter(i => i.name.toLowerCase().includes(search.toLowerCase()));
+    // When browsing: filter by selected category
+    if (selectedCategory !== 'all') f = f.filter(i => i.category === selectedCategory);
+    return f;
+  }, [enabledItems, selectedCategory, search]);
+
+  // Total = menu cart + custom items
+  const menuTotal   = getCartTotal();
+  const customTotal = customItems.reduce((s, c) => s + c.price * c.qty, 0);
+  const total       = menuTotal + customTotal;
+  const cartCount   = getCartCount();
+  const getQty = (id: string) => cart.find(c => c.menuItem.id === id)?.quantity || 0;
+
+  // -- Add custom item ----------------------------------------------------------
+  const handleAddCustomItem = () => {
+    const n = customName.trim();
+    const p = parseFloat(customPrice);
+    const q = parseInt(customQty) || 1;
+    if (!n) { setCustomError('Enter item name'); return; }
+    if (isNaN(p) || p <= 0) { setCustomError('Enter a valid price'); return; }
+    setCustomError('');
+    setCustomItems(prev => {
+      const existing = prev.find(c => c.name.toLowerCase() === n.toLowerCase());
+      if (existing) return prev.map(c => c.name.toLowerCase() === n.toLowerCase() ? { ...c, qty: c.qty + q } : c);
+      return [...prev, { id: `custom-${Date.now()}-${Math.random()}`, name: n, price: p, qty: q }];
+    });
+    setCustomName(''); setCustomPrice(''); setCustomQty('1');
+  };
+
+  const updateCustomQty = (id: string, qty: number) => {
+    if (qty <= 0) setCustomItems(prev => prev.filter(c => c.id !== id));
+    else setCustomItems(prev => prev.map(c => c.id === id ? { ...c, qty } : c));
+  };
+
+  const allEmpty = cartCount === 0 && customItems.length === 0;
+
+  // -- Submit -------------------------------------------------------------------
+  const handleSubmit = async () => {
+    if (allEmpty) return;
+    if (!currentUser) return;
+    if (!counterOpenedToday) { setAdvanceError('Counter is not opened. Open Cashier Counter, then Counter Open before collecting payment.'); return; }
+    if (!customerName.trim()) { setAdvanceError('Customer name is required'); return; }
+    if (!mobileNumber.trim()) { setAdvanceError('Mobile number is required'); return; }
+    if (!deliveryDate) { setAdvanceError('Delivery date/time is required'); return; }
+    // MISSING FIX: validate delivery date is a valid date and is not in the past
+    const deliveryMs = new Date(deliveryDate).getTime();
+    if (Number.isNaN(deliveryMs)) { setAdvanceError('Delivery date is not a valid date'); return; }
+    if (deliveryMs < Date.now() - 60_000) { setAdvanceError('Delivery date must be a future date/time'); return; }
+    if (!billPerson.trim()) { setAdvanceError('Bill person is required'); return; }
+    if (!isFullPayment) {
+      const amt = parseFloat(advanceAmt);
+      if (isNaN(amt) || amt <= 0) { setAdvanceError('Enter advance amount'); return; }
+      if (amt >= total) { setAdvanceError('Advance must be less than total. Use full payment if paying everything.'); return; }
+    }
+    if (!advanceMethod) { setAdvanceError('Select payment method'); return; }
+    setAdvanceError('');
+    setSubmitting(true);
+
+    try {
+      for (const ci of customItems) {
+        const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
+        for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
+      }
+      await new Promise(r => setTimeout(r, 0));
+      const advanceNotes = [
+        `Mobile: ${mobileNumber.trim()}`,
+        `Order date: ${orderDate}`,
+        `Bill person: ${billPerson.trim()}`,
+        notes.trim() ? `Notes: ${notes.trim()}` : '',
+      ].filter(Boolean).join(' | ');
+      const orderId = await submitAdvanceOrder({
+        orderType: 'takeaway',
+        notes: advanceNotes || undefined,
+        customerName: customerName.trim(),
+        createdBy: billPerson.trim() || currentUser.username,
+        advanceAmount: isFullPayment ? total : parseFloat(advanceAmt),
+        advancePaidBy: advanceMethod,
+        deliveryDate,
+        isFullPayment,
+      });
+      const savedOrder = useOrderStore.getState().orders.find(o => o.id === orderId);
+      if (savedOrder) printAdvanceSalesSlip(savedOrder, mobileNumber.trim(), orderDate, billPerson.trim());
+      setShowSuccess(true);
+      setNotes(''); setCustomerName(''); setMobileNumber(''); setOrderDate(todayInput); setDeliveryDate(''); setBillPerson(defaultBillPerson);
+      setAdvanceAmt(''); setAdvanceMethod(null); setIsFullPayment(false);
+      setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
+      setTimeout(() => { setShowSuccess(false); onCreated(); }, 1800);
+    } catch (err) {
+      clearCart();
+      setAdvanceError(err instanceof Error ? err.message : 'Failed to submit order - please try again.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (showSuccess) {
+    return (
+      <div className="flex flex-col items-center justify-center py-24 px-6 text-center gap-4">
+        <div className="size-20 rounded-3xl flex items-center justify-center animate-scale-in"
+          style={{ background: 'linear-gradient(135deg,rgba(217,119,6,0.15),rgba(217,119,6,0.08))', border: '2px solid rgba(217,119,6,0.25)' }}>
+          <Wallet className="size-10 text-amber-600" />
+        </div>
+        <div>
+          <h2 className="font-display text-2xl font-bold text-foreground">Advance Recorded!</h2>
+          <p className="text-muted-foreground font-body mt-1 text-sm">Sales order slip generated. Balance pending collection.</p>
+        </div>
+      </div>
+    );
+  }
+
+  const PAYMENT_ICONS = { cash: <Banknote className="size-4" />, upi: <Smartphone className="size-4" />, card: <CreditCard className="size-4" /> };
+
+  return (
+    <div className="biller-workspace flex flex-1 min-h-0 overflow-hidden">
+
+      {/* -- COL 1: Category sidebar ---------------------- */}
+      {itemMode === 'menu' && (
+        <div className="biller-category-sidebar w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
+          <div className="biller-category-mode px-2 py-2 border-b border-border bg-background shrink-0">
+            <div className="flex gap-1 p-0.5 rounded-lg bg-muted">
+              <button onClick={() => setItemMode('menu')}
+                className="flex-1 py-2.5 rounded-md text-sm font-body font-bold bg-card shadow text-foreground flex items-center justify-center gap-1.5">
+                <UtensilsCrossed className="size-4" />Menu
+              </button>
+              <button onClick={() => setItemMode('custom')}
+                className="flex-1 py-2.5 rounded-md text-sm font-body font-bold text-muted-foreground active:scale-95 flex items-center justify-center gap-1.5">
+                <Edit3 className="size-4" />Custom
+              </button>
+            </div>
+          </div>
+          {[{ id: 'all', name: 'All Items' }, ...MENU_CATEGORIES].map((cat) => {
+            const isActive = selectedCategory === cat.id && !search.trim();
+            const catCount = cat.id === 'all'
+              ? enabledItems.length
+              : enabledItems.filter(i => i.category === cat.id).length;
+            return (
+              <button key={cat.id}
+                onClick={() => { setSelectedCategory(cat.id); setSearch(''); }}
+                className={cn('biller-category-button w-full text-left px-3 py-3 border-b border-border/50 transition-all',
+                  isActive ? 'bg-amber-500 text-white' : 'hover:bg-muted text-foreground')}>
+                <p className="text-sm font-bold leading-tight">{cat.name}</p>
+                <p className={cn('text-xs mt-0.5 tabular-nums', isActive ? 'text-white/70' : 'text-muted-foreground')}>
+                  {catCount} items
+                </p>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* -- COL 2: Search + Items ------------------------ */}
+      <div className="biller-menu-panel flex-1 min-w-0 flex flex-col overflow-hidden">
+        {itemMode === 'menu' ? (
+          <>
+            <div className="biller-search-shell px-3 py-2.5 border-b border-border bg-background shrink-0">
+              <div className="relative">
+                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+                <input type="text" placeholder={`Search all ${enabledItems.length} items...`} value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  className="w-full pl-10 pr-9 py-2.5 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-card transition-all" />
+                {search && <button onClick={() => setSearch('')} aria-label="Clear search" className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"><X className="size-4" /></button>}
+              </div>
+              {search.trim() ? (
+                <p className="text-[11px] text-amber-600 font-semibold mt-1.5 px-1">
+                  {filteredItems.length} result{filteredItems.length !== 1 ? 's' : ''} across all categories
+                </p>
+              ) : (
+                <p className="text-[11px] text-muted-foreground mt-1.5 px-1">
+                  {selectedCategory === 'all' ? `${enabledItems.length} items` : `${filteredItems.length} in ${MENU_CATEGORIES.find(c => c.id === selectedCategory)?.name ?? selectedCategory}`}
+                </p>
+              )}
+            </div>
+            <div className="biller-item-scroll flex-1 overflow-y-auto px-2 py-2">
+              {filteredItems.length === 0 ? (
+                <EmptyState icon="" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
+              ) : (
+                <div className="biller-menu-grid grid grid-cols-4 gap-1.5">
+                  {filteredItems.map(item => (
+                    <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)}
+                      onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact hideImage />
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+            <div className="flex gap-1 p-1 rounded-xl bg-muted">
+              <button onClick={() => setItemMode('menu')}
+                className="flex-1 py-2 rounded-lg text-sm font-body font-semibold text-muted-foreground active:scale-95 flex items-center justify-center gap-1.5">
+                <UtensilsCrossed className="size-3.5" />Menu Items
+              </button>
+              <button onClick={() => setItemMode('custom')}
+                className="flex-1 py-2 rounded-lg text-sm font-body font-semibold bg-card shadow text-foreground flex items-center justify-center gap-1.5">
+                <Edit3 className="size-3.5" />Custom Items
+              </button>
+            </div>
+            <div className="bg-card border border-amber-200/60 rounded-2xl p-4 space-y-3 shadow-soft"
+              style={{ background: 'linear-gradient(135deg,rgba(251,191,36,0.04),rgba(251,191,36,0.02))' }}>
+              <div className="flex items-center gap-2 mb-1">
+                <div className="size-7 rounded-lg flex items-center justify-center" style={{ background: 'rgba(217,119,6,0.15)' }}>
+                  <Edit3 className="size-3.5 text-amber-600" />
+                </div>
+                <p className="text-sm font-body font-bold text-foreground">Add Custom Item</p>
+              </div>
+              <div>
+                <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">
+                  Item Name <span className="text-destructive">*</span>
+                </label>
+                <input type="text" placeholder="e.g. Special Cake, Custom Parcel..." value={customName}
+                  onChange={e => { setCustomName(e.target.value); setCustomError(''); }}
+                  className="w-full px-4 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-card transition-all"
+                  onKeyDown={e => e.key === 'Enter' && handleAddCustomItem()} />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">
+                    Price (Rs ) <span className="text-destructive">*</span>
+                  </label>
+                  <div className="relative">
+                    <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                    <input type="number" min="0" step="0.5" placeholder="0.00" value={customPrice}
+                      onChange={e => { setCustomPrice(e.target.value); setCustomError(''); }}
+                      className="w-full pl-8 pr-3 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body tabular-nums focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-card transition-all"
+                      onKeyDown={e => e.key === 'Enter' && handleAddCustomItem()} />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">Qty</label>
+                  <div className="flex items-center gap-1.5">
+                    <button onClick={() => setCustomQty(q => String(Math.max(1, parseInt(q || '1') - 1)))}
+                      aria-label="Decrease quantity"
+                      className="size-10 shrink-0 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90"><Minus className="size-3.5" /></button>
+                    <input type="number" min="1" value={customQty} onChange={e => setCustomQty(e.target.value)}
+                      className="flex-1 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body tabular-nums text-center focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-card transition-all" />
+                    <button onClick={() => setCustomQty(q => String((parseInt(q || '1')) + 1))}
+                aria-label="Increase quantity"
+                      className="size-10 shrink-0 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90"><Plus className="size-3.5" /></button>
+                  </div>
+                </div>
+              </div>
+              {customError && (
+                <p className="text-xs font-body text-destructive flex items-center gap-1.5">
+                  <AlertCircle className="size-3 shrink-0" />{customError}
+                </p>
+              )}
+              <button onClick={handleAddCustomItem}
+                className="w-full py-3 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all text-white"
+                style={{ background: 'linear-gradient(135deg,#b8860b,#d97706)', boxShadow: '0 4px 16px rgba(217,119,6,0.3)' }}>
+                <Plus className="size-4" />Add to Bill
+              </button>
+            </div>
+            {customItems.length > 0 ? (
+              <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-soft">
+                <div className="px-4 py-2.5 border-b border-border flex items-center justify-between" style={{ background: 'rgba(217,119,6,0.06)' }}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-body font-bold text-amber-700">Custom Items Added</span>
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500 text-white">{customItems.length}</span>
+                  </div>
+                  <button onClick={() => setCustomItems([])} className="text-xs font-body font-semibold text-destructive active:opacity-70">Clear all</button>
+                </div>
+                <div className="divide-y divide-border/50">
+                  {customItems.map(ci => (
+                    <div key={ci.id} className="flex items-center gap-3 px-4 py-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-body font-semibold text-foreground truncate">{ci.name}</p>
+                        <p className="text-xs font-body text-muted-foreground tabular-nums">
+                          {formatCurrency(ci.price)} x {ci.qty} = <span className="font-bold text-amber-600">{formatCurrency(ci.price * ci.qty)}</span>
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button onClick={() => updateCustomQty(ci.id, ci.qty - 1)} className="size-7 rounded-lg bg-muted flex items-center justify-center active:scale-90 border border-border"><Minus className="size-3" /></button>
+                        <span className="w-6 text-center text-sm font-bold tabular-nums">{ci.qty}</span>
+                        <button onClick={() => updateCustomQty(ci.id, ci.qty + 1)} className="size-7 rounded-lg flex items-center justify-center active:scale-90 text-white"
+                          style={{ background: 'linear-gradient(135deg,#b8860b,#d97706)' }}><Plus className="size-3" /></button>
+                        <button onClick={() => updateCustomQty(ci.id, 0)} className="size-7 rounded-lg bg-destructive/10 text-destructive flex items-center justify-center active:scale-90 border border-destructive/20 ml-0.5"><Trash2 className="size-3" /></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center py-12 gap-3 text-center">
+                <div className="size-14 rounded-2xl bg-muted flex items-center justify-center">
+                  <Edit3 className="size-6 text-muted-foreground/40" />
+                </div>
+                <p className="text-sm font-body text-muted-foreground">No custom items added yet.</p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* -- COL 3: Cart + Advance form --------------------- */}
+      <div className="biller-cart-panel w-[30%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0" style={{ background: 'rgba(217,119,6,0.06)' }}>
+          <div className="flex items-center gap-2">
+            <Wallet className="size-4 text-amber-600" />
+            <h3 className="font-display font-bold text-lg text-foreground">Advance Bill</h3>
+            {!allEmpty && <span className="text-xs font-body font-bold px-1.5 py-0.5 rounded-full bg-amber-500 text-white">{cartCount + customItems.length}</span>}
+          </div>
+          {!allEmpty && (
+            <button onClick={() => { clearCart(); setCustomItems([]); }}
+              className="text-xs font-body font-semibold text-destructive bg-destructive/10 px-2.5 py-1 rounded-lg active:scale-95 border border-destructive/15">
+              Clear
+            </button>
+          )}
+        </div>
+
+        {/* Cart items */}
+        <div className="biller-cart-items flex-1 overflow-y-auto min-h-0 px-4 py-2 space-y-2">
+          {allEmpty ? (
+            <div className="flex flex-col items-center justify-center h-full py-8 text-muted-foreground gap-2">
+              <ShoppingBag className="size-7 opacity-25" />
+              <p className="text-sm font-body">Add menu or custom items</p>
+            </div>
+          ) : (
+            <>
+              {cart.map(ci => (
+                <div key={ci.menuItem.id} className="flex items-center gap-2 py-1.5">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-base font-body font-semibold truncate leading-tight">{ci.menuItem.name}</p>
+                    <p className="text-sm text-primary font-bold tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button onClick={() => updateCartQuantity(ci.menuItem.id, ci.quantity - 1)} className="size-6 rounded-lg bg-muted flex items-center justify-center active:scale-90 border border-border"><Minus className="size-3" /></button>
+                    <span className="w-5 text-center text-xs font-bold tabular-nums">{ci.quantity}</span>
+                    <button onClick={() => addToCart(ci.menuItem)} className="size-6 rounded-lg text-primary-foreground flex items-center justify-center active:scale-90"
+                      style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-3" /></button>
+                    <button onClick={() => updateCartQuantity(ci.menuItem.id, 0)} className="size-6 rounded-lg bg-destructive/10 text-destructive flex items-center justify-center active:scale-90 ml-0.5 border border-destructive/15"><Trash2 className="size-3" /></button>
+                  </div>
+                </div>
+              ))}
+              {customItems.map(ci => (
+                <div key={ci.id} className="flex items-center gap-2 py-1.5 border-l-2 border-amber-400 pl-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1">
+                      <p className="text-base font-body font-semibold truncate leading-tight">{ci.name}</p>
+                      <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0">CUSTOM</span>
+                    </div>
+                    <p className="text-sm text-amber-600 font-bold tabular-nums">{formatCurrency(ci.price * ci.qty)}</p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button onClick={() => updateCustomQty(ci.id, ci.qty - 1)} className="size-6 rounded-lg bg-muted flex items-center justify-center active:scale-90 border border-border"><Minus className="size-3" /></button>
+                    <span className="w-5 text-center text-xs font-bold tabular-nums">{ci.qty}</span>
+                    <button onClick={() => updateCustomQty(ci.id, ci.qty + 1)} className="size-6 rounded-lg text-white flex items-center justify-center active:scale-90"
+                      style={{ background: 'linear-gradient(135deg,#b8860b,#d97706)' }}><Plus className="size-3" /></button>
+                    <button onClick={() => updateCustomQty(ci.id, 0)} className="size-6 rounded-lg bg-destructive/10 text-destructive flex items-center justify-center active:scale-90 ml-0.5 border border-destructive/15"><Trash2 className="size-3" /></button>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+
+        {/* Advance form + pending - fixed bottom */}
+        <div className="biller-cart-footer border-t border-border shrink-0 overflow-y-auto">
+          {!allEmpty && (
+            <div className="px-4 py-3 space-y-3 bg-muted/20">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="relative">
+                  <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                  <input type="text" placeholder="Customer name *" value={customerName} onChange={e => { setCustomerName(e.target.value); setAdvanceError(''); }}
+                    className="w-full pl-8 pr-3 py-3 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
+                </div>
+                <div className="relative">
+                  <Smartphone className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                  <input type="tel" placeholder="Mobile number *" value={mobileNumber} onChange={e => { setMobileNumber(e.target.value); setAdvanceError(''); }}
+                    className="w-full pl-8 pr-3 py-3 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-body font-bold text-blue-700 uppercase tracking-widest mb-1.5 block flex items-center gap-1">
+                    <Calendar className="size-3" /> Order Date
+                  </label>
+                  <input type="date" value={orderDate} onChange={e => setOrderDate(e.target.value)}
+                    className="w-full px-3 py-3 bg-card border border-border rounded-xl text-sm font-body focus:outline-none focus:ring-2 focus:ring-blue-400/50 transition-all" />
+                </div>
+                <div>
+                  <label className="text-[10px] font-body font-bold text-blue-700 uppercase tracking-widest mb-1.5 block flex items-center gap-1">
+                    <Calendar className="size-3" /> Delivery Date/Time *
+                  </label>
+                  <input
+                    type="datetime-local"
+                    value={deliveryDate}
+                    min={new Date().toISOString().slice(0, 16)}
+                    onChange={e => { setDeliveryDate(e.target.value); setAdvanceError(''); }}
+                    className={cn(
+                      'w-full px-3 py-3 bg-card border rounded-xl text-sm font-body focus:outline-none focus:ring-2 focus:ring-blue-400/50 transition-all',
+                      !deliveryDate ? 'border-red-300 ring-1 ring-red-200' : 'border-border'
+                    )}
+                  />
+                </div>
+              </div>
+
+              <div className="relative">
+                <UserCheck className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                <input type="text" placeholder="Bill person *" value={billPerson} onChange={e => { setBillPerson(e.target.value); setAdvanceError(''); }}
+                  className="w-full pl-8 pr-3 py-3 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
+              </div>
+
+              <div className="relative">
+                <StickyNote className="absolute left-3 top-2.5 size-3.5 text-muted-foreground" />
+                <textarea placeholder="Order notes (optional)" value={notes} onChange={e => setNotes(e.target.value)} rows={2}
+                  className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
+              </div>
+
+              <div className="pt-2 border-t border-border space-y-3">
+                <div className="space-y-1">
+                  {menuTotal > 0 && (
+                    <div className="flex justify-between text-xs font-body text-muted-foreground">
+                      <span>Menu</span><span className="tabular-nums">{formatCurrency(menuTotal)}</span>
+                    </div>
+                  )}
+                  {customTotal > 0 && (
+                    <div className="flex justify-between text-xs font-body text-amber-600">
+                      <span>Custom</span><span className="tabular-nums">{formatCurrency(customTotal)}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between pt-1 border-t border-border/50">
+                    <span className="font-body text-sm font-bold text-foreground">Total</span>
+                    <span className="font-display text-2xl font-bold text-foreground tabular-nums">{formatCurrency(total)}</span>
+                  </div>
+                </div>
+
+                {/* Full Payment Toggle */}
+                <div className="flex items-center justify-between py-2 px-3 rounded-xl bg-emerald-50 border border-emerald-200">
+                  <div className="flex flex-col">
+                    <span className="text-xs font-body font-bold text-emerald-800">Full Payment Now?</span>
+                    <span className="text-[10px] font-body text-emerald-600">Customer pays the entire bill upfront</span>
+                  </div>
+                  <button
+                    onClick={() => { setIsFullPayment(p => !p); setAdvanceError(''); }}
+                    className={cn(
+                      'relative w-11 h-6 rounded-full transition-colors shrink-0',
+                      isFullPayment ? 'bg-emerald-500' : 'bg-muted border border-border'
+                    )}
+                  >
+                    <span className={cn('absolute top-0.5 size-5 rounded-full bg-white shadow transition-transform', isFullPayment ? 'translate-x-5' : 'translate-x-0.5')} />
+                  </button>
+                </div>
+
+                {/* Advance Amount - hidden when full payment */}
+                {!isFullPayment && (
+                  <div>
+                    <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">Advance Amount (Rs ) *</label>
+                    <div className="relative">
+                      <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                      <input type="number" value={advanceAmt} onChange={e => { setAdvanceAmt(e.target.value); setAdvanceError(''); }}
+                        placeholder="Enter advance amount"
+                        className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body tabular-nums focus:outline-none focus:ring-2 focus:ring-amber-400/50 transition-all" />
+                    </div>
+                    {advanceAmt && !isNaN(parseFloat(advanceAmt)) && parseFloat(advanceAmt) > 0 && parseFloat(advanceAmt) < total && (
+                      <div className="flex justify-between mt-1.5 px-1">
+                        <span className="text-[11px] font-body text-muted-foreground">Balance due</span>
+                        <span className="text-[11px] font-body font-bold text-red-600 tabular-nums">{formatCurrency(total - parseFloat(advanceAmt))}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {isFullPayment && (
+                  <div className="flex justify-between px-3 py-2 rounded-xl bg-emerald-50 border border-emerald-200">
+                    <span className="text-xs font-body text-emerald-700">Paying in full</span>
+                    <span className="text-sm font-body font-bold text-emerald-700 tabular-nums">{formatCurrency(total)}</span>
+                  </div>
+                )}
+
+                <div>
+                  <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">Payment Method *</label>
+                  <div className="biller-menu-grid grid grid-cols-4 gap-1.5">
+                    {(['cash', 'upi', 'card'] as const).map(m => (
+                      <button key={m} onClick={() => { setAdvanceMethod(m); setAdvanceError(''); }}
+                        className={cn('flex flex-col items-center gap-1 py-3 rounded-xl border-2 text-[11px] font-body font-bold transition-all active:scale-95',
+                          advanceMethod === m ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-border bg-card text-muted-foreground')}>
+                        {PAYMENT_ICONS[m]}{m.toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {advanceError && (
+                  <p className="text-xs font-body text-destructive flex items-center gap-1.5">
+                    <AlertCircle className="size-3 shrink-0" />{advanceError}
+                  </p>
+                )}
+                <button onClick={handleSubmit} disabled={submitting}
+                  className="w-full py-3.5 rounded-xl font-body font-bold text-sm active:scale-[0.98] transition-all disabled:opacity-60 flex items-center justify-center gap-2 text-white"
+                  style={{ background: isFullPayment ? 'linear-gradient(135deg,#16a34a,#15803d)' : 'linear-gradient(135deg,#b8860b,#E07A3A)', boxShadow: isFullPayment ? '0 4px 16px rgba(22,163,74,0.35)' : '0 4px 16px rgba(184,134,11,0.35)' }}>
+                  {isFullPayment ? <CheckCircle2 className="size-4" /> : <Wallet className="size-4" />}
+                  {submitting ? 'Saving...' : isFullPayment ? 'Record Full Payment' : 'Record Advance Order'}
+                </button>
+              </div>
+            </div>
+          )}
+          {advanceOrders.length > 0 && (
+            <div className="border-t-4 border-amber-200">
+              <div className="px-4 py-2.5 flex items-center justify-between" style={{ background: 'rgba(251,191,36,0.08)' }}>
+                <div className="flex items-center gap-2">
+                  <Clock className="size-3.5 text-amber-600" />
+                  <span className="text-xs font-body font-bold text-amber-800">Pending Balance</span>
+                </div>
+                <span className="text-[10px] font-body font-bold px-2 py-0.5 rounded-full bg-amber-200 text-amber-800">
+                  {advanceOrders.length} order{advanceOrders.length !== 1 ? 's' : ''}
+                </span>
+              </div>
+              <div className="divide-y divide-border/40">
+                {advanceOrders.map(order => <AdvanceOrderCard key={order.id} order={order} />)}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NewBillPanel() {
+  const { items, loadMenu } = useMenuStore();
+  const { cart, addToCart, updateCartQuantity, clearCart, getCartTotal, getCartCount, submitOrder } = useOrderStore(
+    useShallow(s => ({
+      cart: s.cart,
+      addToCart: s.addToCart,
+      updateCartQuantity: s.updateCartQuantity,
+      clearCart: s.clearCart,
+      getCartTotal: s.getCartTotal,
+      getCartCount: s.getCartCount,
+      submitOrder: s.submitOrder,
+    }))
+  );
+  const { currentUser } = useAuthStore();
+  const counterOpenedToday = useRetailCounterOpened();
+
+  const [selectedCategory, setSelectedCategory] = useState('all');
+  const [search, setSearch] = useState('');
+  const [itemMode, setItemMode] = useState<'menu' | 'custom'>('menu');
+  const [orderType, setOrderType] = useState<OrderType>('dine_in');
+  const [tableNumber, setTableNumber] = useState<number | null>(null);
+  const [customerName, setCustomerName] = useState('');
+  const [notes, setNotes] = useState('');
+  const [showTableSelect, setShowTableSelect] = useState(false);
+  const [tableError, setTableError] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [showSuccess, setShowSuccess] = useState(false);
+  const [showBillModal, setShowBillModal] = useState(false);
+  const [billMethod, setBillMethod] = useState<BillPaymentMethod>('cash');
+  const [splitPayment, setSplitPayment] = useState<SplitPaymentInputs>({ cash: '', upi: '', card: '' });
+
+  // Credit sale state
+  const [paymentMode, setPaymentMode] = useState<'regular' | 'credit'>('regular');
+  const [creditCustomerPhone, setCreditCustomerPhone] = useState('');
+  const [creditDueDate, setCreditDueDate] = useState('');
+  const [creditError, setCreditError] = useState('');
+
+  // Custom items
+  const [customItems, setCustomItems] = useState<CustomLineItem[]>([]);
+  const [customName, setCustomName]   = useState('');
+  const [customPrice, setCustomPrice] = useState('');
+  const [customQty, setCustomQty]     = useState('1');
+  const [customError, setCustomError] = useState('');
+  const [submitError, setSubmitError] = useState('');
+
+  useEffect(() => {
+    void loadMenu();
+  }, [loadMenu]);
+
+  const enabledItems = useMemo(() => items.filter(i => i.enabled), [items]);
+  const filteredItems = useMemo(() => {
+    let filtered = enabledItems;
+    if (search.trim()) return filtered.filter(i => i.name.toLowerCase().includes(search.toLowerCase()));
+    if (selectedCategory !== 'all') filtered = filtered.filter(i => i.category === selectedCategory);
+    return filtered;
+  }, [enabledItems, selectedCategory, search]);
+
+  const menuTotal     = getCartTotal();
+  const customTotal   = customItems.reduce((s, c) => s + c.price * c.qty, 0);
+  const itemsSubtotal = menuTotal + customTotal;
+  // Parcel charges: Rs 10 per item quantity for takeaway
+  const PARCEL_CHARGE_PER_ITEM = 10;
+  const totalItemQty  = cart.reduce((s, c) => s + c.quantity, 0)
+                      + customItems.reduce((s, c) => s + c.qty, 0);
+  const parcelCharges = orderType === 'takeaway' ? totalItemQty * PARCEL_CHARGE_PER_ITEM : 0;
+  const total         = itemsSubtotal + parcelCharges;
+  const cartCount     = getCartCount();
+  const allEmpty      = cartCount === 0 && customItems.length === 0;
+  const getQty = (id: string) => cart.find(c => c.menuItem.id === id)?.quantity ?? 0;
+  const splitBreakdown: PaymentBreakdown = {
+    cash: Number(splitPayment.cash || 0),
+    upi: Number(splitPayment.upi || 0),
+    card: Number(splitPayment.card || 0),
+  };
+  const splitTotal = splitBreakdown.cash + splitBreakdown.upi + splitBreakdown.card;
+  const splitRemaining = total - splitTotal;
+
+  const handleAddCustomItem = () => {
+    const n = customName.trim();
+    const p = parseFloat(customPrice);
+    const q = parseInt(customQty) || 1;
+    if (!n) { setCustomError('Enter item name'); return; }
+    if (isNaN(p) || p <= 0) { setCustomError('Enter a valid price'); return; }
+    setCustomError('');
+    setCustomItems(prev => {
+      const existing = prev.find(c => c.name.toLowerCase() === n.toLowerCase());
+      if (existing) return prev.map(c => c.name.toLowerCase() === n.toLowerCase() ? { ...c, qty: c.qty + q } : c);
+      return [...prev, { id: `custom-${Date.now()}-${Math.random()}`, name: n, price: p, qty: q }];
+    });
+    setCustomName(''); setCustomPrice(''); setCustomQty('1');
+  };
+
+  const updateCustomQty = (id: string, qty: number) => {
+    if (qty <= 0) setCustomItems(prev => prev.filter(c => c.id !== id));
+    else setCustomItems(prev => prev.map(c => c.id === id ? { ...c, qty } : c));
+  };
+
+  const openBillModal = () => {
+    if (!counterOpenedToday) {
+      setSubmitError('Counter is not opened. Open Cashier Counter, then Counter Open before billing.');
+      return;
+    }
+    if (orderType === 'dine_in' && !tableNumber) {
+      setTableError(true);
+      setSubmitError('Select table before billing.');
+      return;
+    }
+    setTableError(false);
+    setSubmitError('');
+    setShowBillModal(true);
+  };
+
+  const handleSubmit = async () => {
+    if (allEmpty) return;
+    if (!currentUser) return;
+    if (!counterOpenedToday) { setSubmitError('Counter is not opened. Open Cashier Counter, then Counter Open before billing.'); return; }
+    if (orderType === 'dine_in' && !tableNumber) { setTableError(true); return; }
+    setTableError(false);
+
+    // -- Credit sale path ------------------------------------------------------
+    if (paymentMode === 'credit') {
+      const phoneDigits = creditCustomerPhone.replace(/\D/g, '');
+      if (!customerName.trim()) { setCreditError('Customer name is required for credit sale'); return; }
+      if (!creditCustomerPhone.trim()) { setCreditError('Phone number is required for credit sale'); return; }
+      if (phoneDigits.length < 10) { setCreditError('Enter a valid phone number for credit sale'); return; }
+      if (!creditDueDate) { setCreditError('Due date is required for credit sale'); return; }
+      setCreditError('');
+      setSubmitting(true);
+
+      try {
+        for (const ci of customItems) {
+          const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
+          for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
+        }
+        await new Promise(r => setTimeout(r, 0));
+        const { recordCreditSale } = useBranchStore.getState();
+        const branchFromRole: Record<string, Branch> = {
+          billing:      'Retail',
+          branch_incharge_secondary:  'SECONDARY_OUTLET', branch_secondary: 'SECONDARY_OUTLET',
+          branch_incharge_primary:    'PRIMARY_OUTLET',   branch_primary:   'PRIMARY_OUTLET',
+          branch_wholesale: 'Wholesale',
+        };
+        const branch = branchFromRole[currentUser.role];
+        if (!branch) throw new Error(`Billing role ${currentUser.role || 'unknown'} is not mapped to a branch.`);
+        const orderId = await submitOrder({
+          tableNumber: orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined,
+          orderType,
+          notes: notes || undefined,
+          customerName: customerName.trim(),
+          createdBy: currentUser.username,
+          orderSource: 'staff',
+          parcelCharges: parcelCharges > 0 ? parcelCharges : undefined,
+          paymentType: 'credit',
+          billedBy: currentUser.displayName || currentUser.username,
+          status: 'served',
+        });
+        const savedOrder = useOrderStore.getState().orders.find(o => o.id === orderId);
+        const allCartItems = savedOrder?.items ?? [];
+        const billNo = savedOrder ? `CREDIT-${branch}-${savedOrder.orderNumber}` : `CREDIT-${branch}-${Date.now()}`;
+        const creditItems = allCartItems.map(c => ({
+          itemName: c.menuItem.name,
+          quantity: c.quantity,
+          sellUnit: 'pcs' as const,
+          price: c.menuItem.price,
+          lineTotal: c.menuItem.price * c.quantity,
+        }));
+        const err = await recordCreditSale(branch, {
+          billNo,
+          branch,
+          customerName: customerName.trim(),
+          customerPhone: creditCustomerPhone.trim(),
+          items: creditItems,
+          subtotal: total,
+          amountPaid: 0,
+          creditAmount: total,
+          dueDate: creditDueDate,
+          soldBy: currentUser.displayName || currentUser.username,
+          notes: notes || undefined,
+        });
+
+        if (err) { setSubmitError(err); setSubmitting(false); return; }
+
+        // Notify Secondary Outlet Management + Admin
+        await notifyCreditSale({
+          customerName: customerName.trim(),
+          amount: total,
+          billNo,
+          branch,
+          soldBy: currentUser.displayName || currentUser.username,
+          dueDate: creditDueDate,
+        });
+
+        if (savedOrder) printCreditBill(savedOrder, creditCustomerPhone.trim(), creditDueDate);
+        clearCart();
+        setShowSuccess(true);
+        setNotes(''); setCustomerName(''); setTableNumber(null);
+        setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
+        setCreditCustomerPhone(''); setCreditDueDate('');
+        setPaymentMode('regular');
+        setTimeout(() => setShowSuccess(false), 2200);
+      } catch (err) {
+        clearCart();
+        setSubmitError(err instanceof Error ? err.message : 'Failed to record credit sale.');
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
+    // -- Regular order path ----------------------------------------------------
+    const paymentBreakdown = billMethod === 'part_payment' ? splitBreakdown : undefined;
+    if (paymentBreakdown) {
+      const values = Object.values(paymentBreakdown);
+      if (values.some(value => Number.isNaN(value) || value < 0)) {
+        setSubmitError('Enter valid split payment amounts.');
+        return;
+      }
+      if (splitTotal <= 0) {
+        setSubmitError('Enter at least one split payment amount.');
+        return;
+      }
+      if (Math.abs(splitRemaining) > 0.01) {
+        setSubmitError(`Split payment must match bill total. Remaining: ${formatCurrency(splitRemaining)}`);
+        return;
+      }
+    }
+    setSubmitting(true);
+
+    setSubmitError('');
+    try {
+      for (const ci of customItems) {
+        const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
+        for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
+      }
+      await new Promise(r => setTimeout(r, 0));
+      const billedBy = currentUser.displayName || currentUser.username;
+      const orderId = await submitOrder({
+        tableNumber: orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined,
+        orderType,
+        notes: notes || undefined,
+        customerName: customerName || undefined,
+        createdBy: currentUser.username,
+        orderSource: 'staff',
+        parcelCharges: parcelCharges > 0 ? parcelCharges : undefined,
+        paymentType: billMethod,
+        paymentBreakdown,
+        billedBy,
+        status: 'served',
+      });
+      const savedOrder = useOrderStore.getState().orders.find(o => o.id === orderId);
+      if (savedOrder) printPaidBill(savedOrder, 'original');
+      setShowBillModal(false);
+      setShowSuccess(true);
+      setNotes(''); setCustomerName(''); setTableNumber(null);
+      setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
+      setBillMethod('cash');
+      setSplitPayment({ cash: '', upi: '', card: '' });
+      setTimeout(() => setShowSuccess(false), 2200);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to submit order - please try again.';
+      setSubmitError(msg);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (showSuccess) {
+    return (
+      <div className="flex flex-col items-center justify-center py-24 px-6 text-center gap-4">
+        <div className="size-20 rounded-3xl flex items-center justify-center animate-scale-in"
+          style={{
+            background: paymentMode === 'credit'
+              ? 'linear-gradient(135deg,rgba(220,38,38,0.12),rgba(220,38,38,0.06))'
+              : 'linear-gradient(135deg,rgba(16,185,129,0.12),rgba(16,185,129,0.06))',
+            border: paymentMode === 'credit'
+              ? '2px solid rgba(220,38,38,0.25)'
+              : '2px solid rgba(16,185,129,0.25)',
+          }}>
+          {paymentMode === 'credit'
+            ? <CreditCard className="size-10 text-red-600" />
+            : <Receipt className="size-10 text-emerald-600" />
+          }
+        </div>
+        <div>
+          <h2 className="font-display text-2xl font-bold text-foreground">
+            {paymentMode === 'credit' ? 'Credit Sale Recorded!' : 'Bill Created!'}
+          </h2>
+          <p className="text-muted-foreground font-body mt-1 text-sm">
+            {paymentMode === 'credit'
+              ? 'Secondary Outlet Management & Admin have been notified.'
+              : 'Bill saved and print command opened.'
+            }
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+    {!counterOpenedToday && (
+      <div className="m-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-black text-amber-900">
+        Counter is not opened today. Open Cashier Counter, then Counter Open before billing.
+      </div>
+    )}
+    {showBillModal && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 px-4" onClick={() => !submitting && setShowBillModal(false)}>
+        <div className="w-full max-w-md rounded-3xl bg-background border border-border shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+          <div className="px-5 py-4 border-b border-border bg-emerald-50">
+            <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Final billing</p>
+            <h2 className="font-display text-2xl font-black text-foreground">Bill & Print</h2>
+            <p className="text-sm text-muted-foreground">Confirm payment mode. This saves the bill as paid and opens the print slip.</p>
+          </div>
+          <div className="p-5 space-y-4">
+            <div className="rounded-2xl border border-border bg-muted/30 p-4 space-y-2">
+              <div className="flex justify-between text-sm"><span>Items</span><span className="font-black">{totalItemQty}</span></div>
+              {parcelCharges > 0 && <div className="flex justify-between text-sm text-amber-700"><span>Parcel charges</span><span className="font-black">{formatCurrency(parcelCharges)}</span></div>}
+              <div className="flex justify-between items-center pt-2 border-t border-border"><span className="font-bold">Payable</span><span className="font-display text-3xl font-black tabular-nums">{formatCurrency(total)}</span></div>
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Payment mode</label>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {([
+                  { key: 'cash' as const, label: 'Cash', icon: <Banknote className="size-5" /> },
+                  { key: 'upi' as const, label: 'UPI', icon: <Smartphone className="size-5" /> },
+                  { key: 'card' as const, label: 'Card', icon: <CreditCard className="size-5" /> },
+                  { key: 'part_payment' as const, label: 'Part', icon: <Wallet className="size-5" /> },
+                ]).map(m => (
+                  <button key={m.key} type="button" onClick={() => { setBillMethod(m.key); setSubmitError(''); }}
+                    className={cn('rounded-2xl border-2 py-4 text-sm font-black flex flex-col items-center gap-1.5 active:scale-95 transition-all',
+                      billMethod === m.key ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-border bg-card text-muted-foreground')}>
+                    {m.icon}
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {billMethod === 'part_payment' && (
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-3 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-black uppercase tracking-widest text-emerald-700">Part Payment</p>
+                  <p className={cn('text-xs font-black tabular-nums', Math.abs(splitRemaining) <= 0.01 ? 'text-emerald-700' : splitRemaining > 0 ? 'text-amber-700' : 'text-red-600')}>
+                    {Math.abs(splitRemaining) <= 0.01 ? 'Matched' : splitRemaining > 0 ? `Remaining ${formatCurrency(splitRemaining)}` : `Extra ${formatCurrency(Math.abs(splitRemaining))}`}
+                  </p>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {(['cash', 'upi', 'card'] as const).map(method => (
+                    <label key={method} className="block">
+                      <span className="mb-1 block text-[10px] font-black uppercase tracking-widest text-muted-foreground">{method.toUpperCase()}</span>
+                      <input
+                        type="number"
+                        min="0"
+                        value={splitPayment[method]}
+                        onChange={e => { setSplitPayment(prev => ({ ...prev, [method]: e.target.value })); setSubmitError(''); }}
+                        placeholder="0"
+                        className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-emerald-400/40"
+                      />
+                    </label>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between rounded-xl bg-card/80 px-3 py-2 text-xs font-black">
+                  <span>Split total</span>
+                  <span className="tabular-nums">{formatCurrency(splitTotal)} / {formatCurrency(total)}</span>
+                </div>
+              </div>
+            )}
+            {submitError && <p className="text-xs text-destructive font-semibold">{submitError}</p>}
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setShowBillModal(false)} disabled={submitting}
+                className="flex-1 py-3 rounded-xl border border-border text-sm font-bold active:scale-95 disabled:opacity-50">Cancel</button>
+              <button type="button" onClick={handleSubmit} disabled={submitting}
+                className="flex-[1.4] py-3 rounded-xl bg-emerald-600 text-white text-sm font-black active:scale-95 disabled:opacity-60 flex items-center justify-center gap-2">
+                <Printer className="size-4" />{submitting ? 'Billing...' : 'Bill & Print'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+    <div className="biller-workspace flex flex-1 min-h-0 overflow-hidden">
+
+      {/* -- COL 1: Category sidebar ---------------------- */}
+      {itemMode === 'menu' && (
+        <div className="biller-category-sidebar w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
+          <div className="biller-category-mode px-2 py-2 border-b border-border bg-background shrink-0">
+            <div className="flex gap-1 p-0.5 rounded-lg bg-muted">
+              <button onClick={() => setItemMode('menu')}
+                className="flex-1 py-2.5 rounded-md text-sm font-body font-bold transition-all bg-card shadow text-foreground flex items-center justify-center gap-1.5">
+                <UtensilsCrossed className="size-4" />Menu
+              </button>
+              <button onClick={() => setItemMode('custom')}
+                className="flex-1 py-2.5 rounded-md text-sm font-body font-bold transition-all text-muted-foreground active:scale-95 flex items-center justify-center gap-1.5">
+                <Edit3 className="size-4" />Custom
+              </button>
+            </div>
+          </div>
+          {[{ id: 'all', name: 'All Items' }, ...MENU_CATEGORIES].map((cat) => {
+            const isActive = selectedCategory === cat.id && !search.trim();
+            const catCount = cat.id === 'all'
+              ? enabledItems.length
+              : enabledItems.filter(i => i.category === cat.id).length;
+            return (
+              <button key={cat.id}
+                onClick={() => { setSelectedCategory(cat.id); setSearch(''); }}
+                className={cn('biller-category-button w-full text-left px-3 py-3 border-b border-border/50 transition-all',
+                  isActive ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-foreground')}>
+                <p className="text-sm font-bold leading-tight">{cat.name}</p>
+                <p className={cn('text-xs mt-0.5 tabular-nums', isActive ? 'text-primary-foreground/70' : 'text-muted-foreground')}>
+                  {catCount} items
+                </p>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* -- COL 2: Search + Item picker -------------------- */}
+      <div className="biller-menu-panel flex-1 min-w-0 flex flex-col overflow-hidden">
+        {itemMode === 'menu' ? (
+          <>
+            <div className="biller-search-shell px-3 py-2.5 border-b border-border bg-background shrink-0">
+              <div className="relative">
+                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+                <input type="text" placeholder={`Search all ${enabledItems.length} items...`} value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  className="w-full pl-10 pr-9 py-2.5 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-card transition-all" />
+                {search && <button onClick={() => setSearch('')} aria-label="Clear search" className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"><X className="size-4" /></button>}
+              </div>
+              {search.trim() ? (
+                <p className="text-[11px] text-primary font-semibold mt-1.5 px-1">
+                  {filteredItems.length} result{filteredItems.length !== 1 ? 's' : ''} across all categories
+                </p>
+              ) : (
+                <p className="text-[11px] text-muted-foreground mt-1.5 px-1">
+                  {selectedCategory === 'all' ? `${enabledItems.length} items` : `${filteredItems.length} in ${MENU_CATEGORIES.find(c => c.id === selectedCategory)?.name ?? selectedCategory}`}
+                </p>
+              )}
+            </div>
+            <div className="biller-item-scroll flex-1 overflow-y-auto px-2 py-2">
+              {filteredItems.length === 0 ? (
+                <EmptyState icon="" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
+              ) : (
+                <div className="biller-menu-grid grid grid-cols-4 gap-1.5">
+                  {filteredItems.map(item => (
+                    <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)}
+                      onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact hideImage />
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+            <div className="flex gap-1 p-1 rounded-xl bg-muted">
+              <button onClick={() => setItemMode('menu')}
+                className="flex-1 py-2 rounded-lg text-sm font-body font-semibold transition-all text-muted-foreground active:scale-95 flex items-center justify-center gap-1.5">
+                <UtensilsCrossed className="size-3.5" />Menu Items
+              </button>
+              <button onClick={() => setItemMode('custom')}
+                className="flex-1 py-2 rounded-lg text-sm font-body font-semibold transition-all bg-card shadow text-foreground flex items-center justify-center gap-1.5">
+                <Edit3 className="size-3.5" />Custom Items
+              </button>
+            </div>
+            <div className="bg-card border border-border rounded-2xl p-4 space-y-3 shadow-soft">
+              <div className="flex items-center gap-2 mb-1">
+                <div className="size-7 rounded-lg bg-primary/10 flex items-center justify-center">
+                  <Edit3 className="size-3.5 text-primary" />
+                </div>
+                <p className="text-sm font-body font-bold text-foreground">Add Custom Item</p>
+              </div>
+              <div>
+                <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">
+                  Item Name <span className="text-destructive">*</span>
+                </label>
+                <input type="text" placeholder="e.g. Special Thali, Custom Parcel..."
+                  value={customName} onChange={e => { setCustomName(e.target.value); setCustomError(''); }}
+                  className="w-full px-4 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-card transition-all"
+                  onKeyDown={e => e.key === 'Enter' && handleAddCustomItem()} />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">
+                    Price (Rs ) <span className="text-destructive">*</span>
+                  </label>
+                  <div className="relative">
+                    <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                    <input type="number" min="0" step="0.5" placeholder="0.00"
+                      value={customPrice} onChange={e => { setCustomPrice(e.target.value); setCustomError(''); }}
+                      className="w-full pl-8 pr-3 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-card transition-all"
+                      onKeyDown={e => e.key === 'Enter' && handleAddCustomItem()} />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">Qty</label>
+                  <div className="flex items-center gap-1.5">
+                    <button onClick={() => setCustomQty(q => String(Math.max(1, parseInt(q || '1') - 1)))}
+                      aria-label="Decrease quantity"
+                      className="size-10 shrink-0 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90 transition-all">
+                      <Minus className="size-3.5" />
+                    </button>
+                    <input type="number" min="1" value={customQty} onChange={e => setCustomQty(e.target.value)}
+                      className="flex-1 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body tabular-nums text-center focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-card transition-all" />
+                    <button onClick={() => setCustomQty(q => String((parseInt(q || '1')) + 1))}
+                aria-label="Increase quantity"
+                      className="size-10 shrink-0 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90 transition-all">
+                      <Plus className="size-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+              {customError && (
+                <p className="text-xs font-body text-destructive flex items-center gap-1.5">
+                  <AlertCircle className="size-3 shrink-0" />{customError}
+                </p>
+              )}
+              <button onClick={handleAddCustomItem}
+                className="w-full py-3 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all text-primary-foreground shadow-teal"
+                style={{ background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' }}>
+                <Plus className="size-4" />Add to Bill
+              </button>
+            </div>
+            {customItems.length > 0 ? (
+              <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-soft">
+                <div className="px-4 py-2.5 border-b border-border flex items-center justify-between bg-muted/30">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-body font-bold text-foreground">Custom Items</span>
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full surya-gradient text-primary-foreground">{customItems.length}</span>
+                  </div>
+                  <button onClick={() => setCustomItems([])} className="text-xs font-body font-semibold text-destructive active:opacity-70">Clear all</button>
+                </div>
+                <div className="divide-y divide-border/50">
+                  {customItems.map(ci => (
+                    <div key={ci.id} className="flex items-center gap-3 px-4 py-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-body font-semibold text-foreground truncate">{ci.name}</p>
+                        <p className="text-xs font-body text-muted-foreground tabular-nums">
+                          {formatCurrency(ci.price)} x {ci.qty} = <span className="font-bold text-primary">{formatCurrency(ci.price * ci.qty)}</span>
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button onClick={() => updateCustomQty(ci.id, ci.qty - 1)} className="size-7 rounded-lg bg-muted border border-border flex items-center justify-center active:scale-90"><Minus className="size-3" /></button>
+                        <span className="w-6 text-center text-sm font-bold tabular-nums">{ci.qty}</span>
+                        <button onClick={() => updateCustomQty(ci.id, ci.qty + 1)} className="size-7 rounded-lg text-primary-foreground flex items-center justify-center active:scale-90"
+                          style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-3" /></button>
+                        <button onClick={() => updateCustomQty(ci.id, 0)} className="size-7 rounded-lg bg-destructive/10 text-destructive border border-destructive/20 flex items-center justify-center active:scale-90 ml-0.5"><Trash2 className="size-3" /></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center py-12 gap-3 text-center">
+                <div className="size-14 rounded-2xl bg-muted flex items-center justify-center">
+                  <Edit3 className="size-6 text-muted-foreground/40" />
+                </div>
+                <p className="text-sm font-body text-muted-foreground">No custom items yet.</p>
+                <p className="text-xs font-body text-muted-foreground/70">Add items not listed in the menu.</p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* -- COL 3: Bill summary ------------------------ */}
+      <div className="biller-cart-panel w-[30%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
+        <div className="biller-cart-header flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30 shrink-0">
+          <div className="flex items-center gap-2">
+            <ShoppingBag className="size-4 text-primary" />
+            <h3 className="font-display font-bold text-lg text-foreground">New Bill</h3>
+            {!allEmpty && (
+              <span className="text-xs font-body font-bold px-1.5 py-0.5 rounded-full text-primary-foreground"
+                style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}>
+                {cartCount + customItems.length}
+              </span>
+            )}
+          </div>
+          {!allEmpty && (
+            <button onClick={() => { clearCart(); setCustomItems([]); }}
+              className="text-xs font-body font-semibold text-destructive bg-destructive/10 px-2.5 py-1 rounded-lg active:scale-95 border border-destructive/15">
+              Clear
+            </button>
+          )}
+        </div>
+
+        <div className="biller-cart-items flex-1 overflow-y-auto min-h-0 px-4 py-3 space-y-2">
+          {allEmpty ? (
+            <div className="flex flex-col items-center justify-center h-full py-8 text-muted-foreground gap-2 text-center">
+              <ShoppingBag className="size-8 opacity-25" />
+              <p className="text-sm font-body font-bold">Cart is empty</p>
+              <p className="text-xs font-body text-muted-foreground/70">Tap any item to add it here.</p>
+            </div>
+          ) : (
+            <>
+              {cart.map(ci => (
+                <div key={ci.menuItem.id} className="biller-cart-line rounded-2xl border border-border bg-background p-2.5 shadow-sm">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-body font-black truncate leading-tight text-foreground">{ci.menuItem.name}</p>
+                    <p className="text-[11px] text-muted-foreground tabular-nums">{formatCurrency(ci.menuItem.price)} each</p>
+                  </div>
+                  <div className="biller-cart-qty flex items-center gap-1.5 shrink-0">
+                    <button onClick={() => updateCartQuantity(ci.menuItem.id, ci.quantity - 1)} className="size-8 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90" aria-label={`Decrease ${ci.menuItem.name}`}><Minus className="size-3.5" /></button>
+                    <span className="min-w-8 text-center rounded-xl bg-muted/60 px-2 py-1.5 text-sm font-black tabular-nums">{ci.quantity}</span>
+                    <button onClick={() => addToCart(ci.menuItem)} className="size-8 rounded-xl text-primary-foreground flex items-center justify-center active:scale-90" aria-label={`Increase ${ci.menuItem.name}`}
+                      style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-3.5" /></button>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-sm text-primary font-black tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
+                    <button onClick={() => updateCartQuantity(ci.menuItem.id, 0)} className="mt-1 text-[10px] font-black text-destructive inline-flex items-center gap-1" aria-label={`Remove ${ci.menuItem.name}`}><Trash2 className="size-3" />Remove</button>
+                  </div>
+                </div>
+              ))}
+              {customItems.map(ci => (
+                <div key={ci.id} className="biller-cart-line rounded-2xl border border-amber-200 bg-amber-50/45 p-2.5 shadow-sm">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <p className="text-sm font-body font-black truncate leading-tight text-foreground">{ci.name}</p>
+                      <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 shrink-0">CUSTOM</span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground tabular-nums">{formatCurrency(ci.price)} each</p>
+                  </div>
+                  <div className="biller-cart-qty flex items-center gap-1.5 shrink-0">
+                    <button onClick={() => updateCustomQty(ci.id, ci.qty - 1)} className="size-8 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90" aria-label={`Decrease ${ci.name}`}><Minus className="size-3.5" /></button>
+                    <span className="min-w-8 text-center rounded-xl bg-muted/60 px-2 py-1.5 text-sm font-black tabular-nums">{ci.qty}</span>
+                    <button onClick={() => updateCustomQty(ci.id, ci.qty + 1)} className="size-8 rounded-xl text-primary-foreground flex items-center justify-center active:scale-90" aria-label={`Increase ${ci.name}`}
+                      style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-3.5" /></button>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-sm text-amber-700 font-black tabular-nums">{formatCurrency(ci.price * ci.qty)}</p>
+                    <button onClick={() => updateCustomQty(ci.id, 0)} className="mt-1 text-[10px] font-black text-destructive inline-flex items-center gap-1" aria-label={`Remove ${ci.name}`}><Trash2 className="size-3" />Remove</button>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+
+        {!allEmpty && (
+          <div className="biller-cart-footer border-t border-border px-4 py-3 space-y-3 bg-muted/20 shrink-0 overflow-y-auto">
+            <div className="flex gap-2">
+              <button onClick={() => { setOrderType('dine_in'); setTableError(false); }}
+                className={cn('flex-1 py-3 rounded-xl text-sm font-body font-semibold transition-all active:scale-95',
+                  orderType === 'dine_in' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
+                style={orderType === 'dine_in' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
+                Dine In
+              </button>
+              <button onClick={() => { setOrderType('takeaway'); setTableError(false); }}
+                className={cn('flex-1 py-3 rounded-xl text-sm font-body font-semibold transition-all active:scale-95',
+                  orderType === 'takeaway' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
+                style={orderType === 'takeaway' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
+                Takeaway
+              </button>
+            </div>
+
+            {/* -- Payment Mode: Regular vs Credit -- */}
+            <div className="flex gap-2">
+              <button onClick={() => { setPaymentMode('regular'); setCreditError(''); }}
+                className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all active:scale-95 flex items-center justify-center gap-1.5',
+                  paymentMode === 'regular' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
+                style={paymentMode === 'regular' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
+                <Banknote className="size-3.5" />Regular
+              </button>
+              <button onClick={() => { setPaymentMode('credit'); setCreditError(''); }}
+                className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all active:scale-95 flex items-center justify-center gap-1.5',
+                  paymentMode === 'credit' ? 'bg-red-600 text-white shadow-md' : 'bg-red-50 border border-red-200 text-red-700')}>
+                <CreditCard className="size-3.5" />Credit
+              </button>
+            </div>
+
+            {/* -- Credit sale form (shown only when Credit mode is active) -- */}
+            {paymentMode === 'credit' && (
+              <div className="bg-red-50 border border-red-200 rounded-2xl p-3 space-y-2.5">
+                <div className="flex items-center gap-1.5 mb-0.5">
+                  <CreditCard className="size-3.5 text-red-600" />
+                  <p className="text-xs font-body font-bold text-red-700 uppercase tracking-widest">Credit Sale Details</p>
+                </div>
+                <div className="relative">
+                  <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                  <input type="text" placeholder="Customer name *"
+                    value={customerName}
+                    onChange={e => { setCustomerName(e.target.value); setCreditError(''); }}
+                    className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-red-400/40 transition-all" />
+                </div>
+                <div className="relative">
+                  <Smartphone className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                  <input type="tel" placeholder="Phone number *"
+                    value={creditCustomerPhone}
+                    onChange={e => { setCreditCustomerPhone(e.target.value); setCreditError(''); }}
+                    className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-red-400/40 transition-all" />
+                </div>
+                <div>
+                  <label className="text-[10px] font-body font-bold text-red-700 uppercase tracking-widest mb-1 block flex items-center gap-1">
+                    <Calendar className="size-3" />Due Date *
+                  </label>
+                  <input type="date" value={creditDueDate}
+                    min={businessDate()}
+                    onChange={e => { setCreditDueDate(e.target.value); setCreditError(''); }}
+                    className="w-full px-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body focus:outline-none focus:ring-2 focus:ring-red-400/40 transition-all" />
+                </div>
+                <div className="flex items-center gap-2 bg-red-100/60 rounded-xl px-3 py-2">
+                  <Bell className="size-3.5 text-red-600 shrink-0" />
+                  <p className="text-[10px] font-body text-red-700">Secondary Outlet Management &amp; Admin will be notified automatically.</p>
+                </div>
+                {creditError && (
+                  <p className="text-xs font-body text-destructive flex items-center gap-1.5">
+                    <AlertCircle className="size-3 shrink-0" />{creditError}
+                  </p>
+                )}
+              </div>
+            )}
+            {orderType === 'dine_in' ? (
+              <div className="relative">
+                <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                <button onClick={() => setShowTableSelect(!showTableSelect)}
+                  className={cn('w-full pl-9 pr-9 py-3 bg-card border rounded-xl text-left text-sm font-body transition-all',
+                    tableError ? 'border-destructive ring-1 ring-destructive/30' : 'border-border')}>
+                  {tableNumber ? `Table ${tableNumber}` : 'Select Table *'}
+                </button>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                {showTableSelect && (
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-card border border-border rounded-2xl shadow-lifted z-50 p-2.5 grid grid-cols-5 gap-1 max-h-48 overflow-y-auto">
+                    {TABLE_NUMBERS.map(num => (
+                      <button key={num} onClick={() => { setTableNumber(num); setShowTableSelect(false); setTableError(false); }}
+                        className={cn('py-2 rounded-xl text-xs font-body font-semibold transition-all active:scale-90',
+                          tableNumber === num ? 'text-primary-foreground shadow-teal' : 'hover:bg-muted text-foreground')}
+                        style={tableNumber === num ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
+                        {num}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {tableError && (
+                  <div className="flex items-center gap-1 mt-1.5 text-destructive">
+                    <AlertCircle className="size-3" /><span className="text-[11px] font-body">Table required for Dine In</span>
+                  </div>
+                )}
+              </div>
+            ) : paymentMode !== 'credit' ? (
+              <div className="relative">
+                <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                <input type="text" placeholder="Customer name (optional)" value={customerName} onChange={e => setCustomerName(e.target.value)}
+                  className="w-full pl-8 pr-3 py-3 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
+              </div>
+            ) : null}
+            <div className="relative">
+              <StickyNote className="absolute left-3 top-2.5 size-3.5 text-muted-foreground" />
+              <textarea placeholder="Order notes (optional)" value={notes} onChange={e => setNotes(e.target.value)} rows={2}
+                className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {QUICK_NOTES.slice(0, 4).map(n => (
+                <button key={n} onClick={() => setNotes(prev => prev ? `${prev}, ${n}` : n)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-body font-semibold bg-muted border border-border text-muted-foreground hover:bg-primary/10 hover:text-primary hover:border-primary/30 active:scale-95 transition-all">
+                  + {n}
+                </button>
+              ))}
+            </div>
+            <div className="pt-1 border-t border-border space-y-2">
+              {menuTotal > 0 && customTotal > 0 && (
+                <div className="space-y-1">
+                  <div className="flex justify-between text-xs font-body text-muted-foreground">
+                    <span>Menu</span><span className="tabular-nums">{formatCurrency(menuTotal)}</span>
+                  </div>
+                  <div className="flex justify-between text-xs font-body text-primary">
+                    <span>Custom</span><span className="tabular-nums">{formatCurrency(customTotal)}</span>
+                  </div>
+                </div>
+              )}
+              {parcelCharges > 0 && (
+                <div className="flex justify-between text-xs font-body text-amber-600 bg-amber-50 px-2 py-1.5 rounded-lg border border-amber-200">
+                  <span className="flex items-center gap-1">Parcel ({totalItemQty} x Rs 10)</span>
+                  <span className="tabular-nums font-bold">+{formatCurrency(parcelCharges)}</span>
+                </div>
+              )}
+              <div className="flex items-center justify-between">
+                <span className="font-body text-base font-bold text-foreground">Total</span>
+                <span className="font-display text-3xl font-bold text-foreground tabular-nums">{formatCurrency(total)}</span>
+              </div>
+              {submitError && <p className="text-xs font-body text-destructive text-center">{submitError}</p>}
+              <button onClick={() => paymentMode === 'credit' ? handleSubmit() : openBillModal()} disabled={submitting}
+                className={cn(
+                  'w-full py-3.5 rounded-xl font-body font-bold text-sm active:scale-[0.97] transition-all disabled:opacity-60 flex items-center justify-center gap-2 text-white',
+                  paymentMode === 'credit' ? 'shadow-md' : 'shadow-teal'
+                )}
+                style={{
+                  background: paymentMode === 'credit'
+                    ? 'linear-gradient(135deg,#dc2626,#b91c1c)'
+                    : 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))',
+                  boxShadow: paymentMode === 'credit'
+                    ? '0 4px 16px rgba(220,38,38,0.35)'
+                    : undefined,
+                }}>
+                {paymentMode === 'credit'
+                  ? <><CreditCard className="size-4" />{submitting ? 'Recording...' : 'Record Credit Sale'}</>
+                  : <><Receipt className="size-4" />{submitting ? 'Creating...' : 'Create Bill'}</>
+                }
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+    </>
+  );
+}
+
+// -- Main RetailBillingModule -----------------------------------------------------
+
+type RetailEditablePaymentMode = 'cash' | 'upi' | 'card';
+
+interface RetailPaymentEditAudit {
+  order_id: string;
+  old_mode: string;
+  new_mode: string;
+  changed_by: string;
+  reason: string;
+  changed_at: string;
+}
+
+function RetailPaymentModeEditTab({ orders }: { orders: Order[] }) {
+  const { currentUser } = useAuthStore();
+  const loadOrders = useOrderStore((state) => state.loadOrders);
+  const [query, setQuery] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [nextMode, setNextMode] = useState<RetailEditablePaymentMode>('cash');
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+  const [auditRows, setAuditRows] = useState<RetailPaymentEditAudit[]>([]);
+
+  const loadAuditRows = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('retail_payment_mode_edits')
+      .select('order_id, old_mode, new_mode, changed_by, reason, changed_at')
+      .order('changed_at', { ascending: false })
+      .limit(500);
+    if (!error && data) setAuditRows(data as RetailPaymentEditAudit[]);
+  }, []);
+
+  useEffect(() => {
+    void loadOrders(3650);
+    void loadAuditRows();
+  }, [loadAuditRows, loadOrders]);
+
+  const auditsByOrder = useMemo(() => {
+    const map = new Map<string, RetailPaymentEditAudit>();
+    auditRows.forEach((row) => { if (!map.has(row.order_id)) map.set(row.order_id, row); });
+    return map;
+  }, [auditRows]);
+
+  const editableOrders = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return orders
+      .filter((order) => order.status === 'served' && ['cash', 'upi', 'card'].includes(order.paymentType))
+      .filter((order) => {
+        if (!normalized) return true;
+        return [
+          String(order.orderNumber),
+          order.customerName || '',
+          order.billedBy || '',
+          order.createdBy || '',
+          order.paymentType,
+        ].some((value) => String(value).toLowerCase().includes(normalized));
+      })
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [orders, query]);
+
+  const beginEdit = (order: Order) => {
+    setEditingId(order.id);
+    setNextMode(order.paymentType as RetailEditablePaymentMode);
+    setReason('');
+    setMessage('');
+  };
+
+  const saveEdit = async (order: Order) => {
+    if (nextMode === order.paymentType) {
+      setMessage('Choose a different payment mode.');
+      return;
+    }
+    setSaving(true);
+    setMessage('');
+    const changedBy = currentUser?.displayName || currentUser?.username || 'Retail Biller';
+    const { error } = await supabase.rpc('edit_retail_order_payment_mode', {
+      p_order_id: order.id,
+      p_new_mode: nextMode,
+      p_changed_by: changedBy,
+      p_reason: reason.trim() || null,
+    });
+    if (error) {
+      setMessage(error.message.includes('edit_retail_order_payment_mode')
+        ? 'Retail payment-mode migration is not installed. Apply the included Supabase migration first.'
+        : error.message);
+      setSaving(false);
+      return;
+    }
+    await Promise.all([loadOrders(3650), loadAuditRows()]);
+    setEditingId(null);
+    setReason('');
+    setSaving(false);
+    setMessage(`Bill #${String(order.orderNumber).padStart(4, '0')} payment mode updated to ${nextMode.toUpperCase()}.`);
+  };
+
+  return (
+    <div className="h-full min-h-0 overflow-y-auto bg-slate-50 p-2 sm:p-3">
+      <section className="mx-auto max-w-7xl overflow-hidden rounded-[1.6rem] border border-slate-200 bg-white shadow-lg shadow-slate-200/50">
+        <div className="flex flex-col gap-3 border-b border-slate-200 bg-white px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-rose-600">Retail Biller</p>
+            <h2 className="text-2xl font-black text-slate-950">Payment Mode Edit</h2>
+            <p className="text-sm font-semibold text-slate-500">Only Cash, UPI and Card can be corrected. Items, quantities and bill totals remain locked.</p>
+          </div>
+          <div className="relative w-full sm:max-w-sm"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search bill, customer or cashier" className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm font-bold outline-none focus:border-rose-500 focus:bg-white" /></div>
+        </div>
+
+        {message && <div className={cn('mx-4 mt-3 rounded-xl px-3 py-2 text-sm font-bold', message.includes('updated') ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800')}>{message}</div>}
+
+        <div className="overflow-x-auto p-3">
+          <table className="w-full min-w-[900px] border-separate border-spacing-y-1 text-left">
+            <thead><tr className="text-[10px] font-black uppercase tracking-wider text-slate-500"><th className="px-3 py-2">Bill</th><th className="px-3 py-2">Date</th><th className="px-3 py-2">Customer</th><th className="px-3 py-2">Cashier</th><th className="px-3 py-2">Amount</th><th className="px-3 py-2">Payment Mode</th><th className="px-3 py-2">Last Correction</th><th className="px-3 py-2 text-right">Action</th></tr></thead>
+            <tbody>
+              {editableOrders.map((order) => {
+                const audit = auditsByOrder.get(order.id);
+                const editing = editingId === order.id;
+                return (
+                  <tr key={order.id} className="bg-slate-50 text-sm font-semibold text-slate-700">
+                    <td className="rounded-l-xl px-3 py-3 font-black text-slate-950">#{String(order.orderNumber).padStart(4, '0')}</td>
+                    <td className="px-3 py-3 text-xs">{new Date(order.createdAt).toLocaleString('en-IN')}</td>
+                    <td className="px-3 py-3">{order.customerName || '-'}</td>
+                    <td className="px-3 py-3">{order.billedBy || order.createdBy}</td>
+                    <td className="px-3 py-3 font-black tabular-nums text-slate-950">{formatCurrency(order.total)}</td>
+                    <td className="px-3 py-3">
+                      {editing ? (
+                        <select value={nextMode} onChange={(event) => setNextMode(event.target.value as RetailEditablePaymentMode)} className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black uppercase outline-none focus:border-rose-500"><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></select>
+                      ) : <span className="rounded-full bg-slate-900 px-3 py-1 text-[10px] font-black uppercase text-white">{order.paymentType}</span>}
+                    </td>
+                    <td className="px-3 py-3 text-[11px] text-slate-500">{audit ? `${audit.old_mode.toUpperCase()} → ${audit.new_mode.toUpperCase()} · ${new Date(audit.changed_at).toLocaleString('en-IN')}` : 'No correction'}</td>
+                    <td className="rounded-r-xl px-3 py-3 text-right">
+                      {editing ? (
+                        <div className="flex items-center justify-end gap-2"><input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Reason (optional)" className="h-9 w-40 rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold outline-none focus:border-rose-500" /><button onClick={() => void saveEdit(order)} disabled={saving} className="rounded-lg bg-rose-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50">Save</button><button onClick={() => setEditingId(null)} className="rounded-lg bg-slate-200 px-3 py-2 text-xs font-black text-slate-700">Cancel</button></div>
+                      ) : (
+                        <div className="flex items-center justify-end gap-2"><button onClick={() => printPaidBill(order, 'duplicate')} className="rounded-lg bg-slate-200 px-3 py-2 text-xs font-black text-slate-700">Duplicate</button><button onClick={() => beginEdit(order)} className="rounded-lg bg-slate-950 px-3 py-2 text-xs font-black text-white">Edit Mode</button></div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {editableOrders.length === 0 && <div className="rounded-2xl bg-slate-50 p-10 text-center font-bold text-slate-500">No eligible Cash, UPI or Card bills found.</div>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+// -- Main RetailBillingModule -----------------------------------------------------
+export default function RetailBillingModule() {
+  // STORE-01 FIX: granular selector with shallow equality - avoids full re-render on cart/loading changes
+  const { orders, startPolling, stopPolling, polling, loadOrders, clearCart, cart } = useOrderStore(
+    useShallow(s => ({
+      orders: s.orders,
+      startPolling: s.startPolling,
+      stopPolling: s.stopPolling,
+      polling: s.polling,
+      loadOrders: s.loadOrders,
+      clearCart: s.clearCart,
+      cart: s.cart,
+    }))
+  );
+  const { currentUser } = useAuthStore();
+  const counterOpenedToday = useRetailCounterOpened();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'alerts' | 'payment_edit'>('new_bill');
+  // U-01 FIX: track pending tab switch so we can show a confirmation before wiping cart
+  const [pendingTab, setPendingTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'alerts' | 'payment_edit' | null>(null);
+
+  useEffect(() => {
+    const requested = searchParams.get('tab');
+    if (requested === 'advance') setActiveTab('advance');
+    else if (requested === 'alerts') setActiveTab('alerts');
+    else if (requested === 'payment-edit') setActiveTab('payment_edit');
+    else if (requested === 'history') setActiveTab('served');
+    else setActiveTab('new_bill');
+  }, [searchParams]);
+
+  // U-01 FIX: guard against accidental cart wipe - show confirmation when cart has items
+  const switchTab = (tab: OrderStatus | 'new_bill' | 'advance' | 'alerts' | 'payment_edit') => {
+    const leavingBillTab = activeTab === 'new_bill' || activeTab === 'advance';
+    const enteringBillTab = tab === 'new_bill' || tab === 'advance';
+    const cartHasItems = cart.length > 0;
+    if (tab !== activeTab && (leavingBillTab || enteringBillTab) && cartHasItems) {
+      // Park the destination and ask for confirmation
+      setPendingTab(tab);
+      return;
+    }
+    if (tab !== activeTab && (leavingBillTab || enteringBillTab)) {
+      clearCart();
+    }
+    setActiveTab(tab);
+    if (tab === 'new_bill') setSearchParams({});
+    else if (tab === 'advance') setSearchParams({ tab: 'advance' });
+    else if (tab === 'alerts') setSearchParams({ tab: 'alerts' });
+    else if (tab === 'payment_edit') setSearchParams({ tab: 'payment-edit' });
+    else setSearchParams({ tab: 'history' });
+  };
+
+  const confirmTabSwitch = () => {
+    if (!pendingTab) return;
+    clearCart();
+    const next = pendingTab;
+    setActiveTab(next);
+    if (next === 'new_bill') setSearchParams({});
+    else if (next === 'advance') setSearchParams({ tab: 'advance' });
+    else if (next === 'alerts') setSearchParams({ tab: 'alerts' });
+    else if (next === 'payment_edit') setSearchParams({ tab: 'payment-edit' });
+    else setSearchParams({ tab: 'history' });
+    setPendingTab(null);
+  };
+
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
+  const [refreshing, setRefreshing] = useState(false);
+
+  const refreshOrders = useCallback(async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await loadOrders(3650);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadOrders, refreshing]);
+
+  useEffect(() => {
+    startPolling(3650); // Retail history and payment-mode corrections need the complete retained bill history.
+    return () => stopPolling();
+  }, [startPolling, stopPolling]);
+
+  const todayOrders = useMemo(() => {
+    const today = new Date().toDateString();
+    return orders.filter(o => new Date(o.createdAt).toDateString() === today);
+  }, [orders]);
+
+  // Advance orders: paymentType=advance AND balance still outstanding (not yet fully paid)
+  const advanceOrders = useMemo(() =>
+    orders
+      .filter(o =>
+        o.status !== 'cancelled' &&
+        o.paymentType === 'advance' &&
+        !o.fullyPaidAt &&
+        Number(o.balanceDue ?? 0) > 0
+      )
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [orders]
+  );
+
+  // Alerts are operational reminders for TODAY only. Historical completed payments
+  // and future delivery commitments must not clutter this tab.
+  const todayDeliveryAlerts = useMemo(() => orders
+    .filter(o =>
+      o.status !== 'cancelled' &&
+      o.paymentType === 'advance' &&
+      Boolean(o.deliveryDate) &&
+      todayIso(new Date(o.deliveryDate!)) === todayIso()
+    )
+    .sort((a, b) => new Date(a.deliveryDate!).getTime() - new Date(b.deliveryDate!).getTime()), [orders]);
+  const [showDeliveryPopup, setShowDeliveryPopup] = useState(false);
+  useEffect(() => {
+    if (todayDeliveryAlerts.length === 0 || !currentUser?.username) return;
+    const key = `biller-delivery-popup:${currentUser.username}:${todayIso()}`;
+    if (sessionStorage.getItem(key)) return;
+    sessionStorage.setItem(key, 'shown');
+    setShowDeliveryPopup(true);
+  }, [todayDeliveryAlerts.length, currentUser?.username]);
+
+  // Regular orders: exclude OPEN advance orders (pending balance) only.
+  // Closed advance orders (balanceDue=0) ARE included so they appear in All/status tabs.
+  // QR-FIX: QR orders that are still pending/preparing belong to the kitchen, NOT the biller.
+  // Billing only needs to see QR orders once the kitchen marks them ready (or they're served/cancelled).
+  const regularOrders = useMemo(() =>
+    todayOrders.filter(o => {
+      if (o.paymentType === 'advance' && (o.balanceDue ?? 0) > 0) return false; // open advance
+      if (o.orderSource === 'qr' && (o.status === 'pending' || o.status === 'preparing')) return false; // kitchen queue
+      return true;
+    }),
+    [todayOrders]
+  );
+
+  const isUnpaidOpenOrder = useCallback((order: Order) =>
+    order.paymentType === 'unpaid' && order.status !== 'cancelled',
+    []
+  );
+
+  const matchesStatusTab = useCallback((order: Order, status: OrderStatus) => {
+    if (status === 'pending') return isUnpaidOpenOrder(order);
+    if (isUnpaidOpenOrder(order)) return false;
+    return order.status === status;
+  }, [isUnpaidOpenOrder]);
+
+  const filtered = useMemo(() => {
+    if (activeTab === 'new_bill' || activeTab === 'advance' || activeTab === 'alerts' || activeTab === 'payment_edit') return [];
+    let result = regularOrders.filter(o => matchesStatusTab(o, activeTab));
+    if (sourceFilter !== 'all') result = result.filter(o => o.orderSource === sourceFilter);
+    return result;
+  }, [regularOrders, activeTab, sourceFilter, matchesStatusTab]);
+
+  // Counts use regularOrders so advance (pending balance) never pollutes them
+  const qrCount = regularOrders.filter(o => o.orderSource === 'qr').length;
+  const staffCount = regularOrders.filter(o => o.orderSource === 'staff').length;
+
+  return (
+    <div
+      className="flex min-h-0 flex-col overflow-hidden bg-background"
+      style={{
+        height: '100%',
+        paddingTop: '.2rem',
+      }}
+      data-billing-dashboard
+    >
+
+      {/* U-01 FIX: cart-clear confirmation dialog */}
+      {pendingTab !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-6">
+          <div className="bg-background rounded-2xl p-6 max-w-sm w-full shadow-xl border border-border">
+            <div className="size-12 rounded-2xl bg-amber-100 flex items-center justify-center mb-4">
+              <Inbox className="size-6 text-amber-600" />
+            </div>
+            <h2 className="font-display text-lg font-bold text-foreground mb-1">Clear cart?</h2>
+            <p className="text-sm font-body text-muted-foreground mb-5">
+              Switching tabs will clear all current bill items, including any custom lines ({cart.length} saved cart item{cart.length !== 1 ? 's' : ''}). This cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setPendingTab(null)}
+                className="flex-1 py-2.5 rounded-xl border border-border text-sm font-body font-semibold text-foreground active:scale-95"
+              >
+                Stay here
+              </button>
+              <button
+                onClick={confirmTabSwitch}
+                className="flex-1 py-2.5 rounded-xl bg-destructive text-destructive-foreground text-sm font-body font-semibold active:scale-95"
+              >
+                Clear & switch
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeliveryPopup && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/55 px-5">
+          <div className="w-full max-w-md rounded-3xl border border-amber-200 bg-background p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex gap-3"><div className="size-11 rounded-2xl bg-amber-100 flex items-center justify-center"><Bell className="size-5 text-amber-700" /></div><div><h2 className="font-display text-lg font-black">Delivery due today</h2><p className="text-sm text-muted-foreground">{todayDeliveryAlerts.length} advance order{todayDeliveryAlerts.length === 1 ? '' : 's'} require delivery today.</p></div></div>
+              <button onClick={() => setShowDeliveryPopup(false)} className="p-2 rounded-xl bg-muted"><X className="size-4" /></button>
+            </div>
+            <div className="mt-4 max-h-64 overflow-y-auto space-y-2">{todayDeliveryAlerts.map(o => <div key={o.id} className="rounded-2xl border border-border p-3"><div className="flex justify-between gap-3"><span className="font-bold">#{String(o.orderNumber).padStart(4,'0')} · {o.customerName || 'Customer'}</span><span className="text-xs font-bold text-amber-700">{new Date(o.deliveryDate!).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</span></div><p className="text-xs text-muted-foreground mt-1">Balance: {formatCurrency(o.balanceDue ?? 0)}</p></div>)}</div>
+            <button onClick={() => { setShowDeliveryPopup(false); switchTab('alerts'); }} className="mt-4 w-full rounded-xl bg-amber-500 py-3 text-sm font-bold text-white">Open Alerts</button>
+          </div>
+        </div>
+      )}
+
+      {/* Compact live/order filter rail. Main Retail navigation now lives above this page. */}
+      <div className="biller-status-bar shrink-0 border-b border-border bg-background px-3 py-1.5">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <div className="mr-1 flex items-center gap-1.5">
+            <span className={cn('size-2 rounded-full', polling ? 'bg-emerald-400 animate-pulse' : 'bg-gray-400')} />
+            <span className="text-[11px] font-bold text-muted-foreground">{polling ? 'Live' : 'Offline'}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => void refreshOrders()}
+            disabled={refreshing}
+            title="Refresh orders"
+            aria-label="Refresh orders"
+            className="mr-1 inline-flex size-7 items-center justify-center rounded-lg border border-border bg-card text-muted-foreground transition-colors hover:bg-muted disabled:opacity-60"
+          >
+            <RefreshCw className={cn('size-3.5', refreshing && 'animate-spin')} />
+          </button>
+
+          {([
+            { key: 'all' as SourceFilter, label: `Total: ${regularOrders.length}`, icon: null },
+            { key: 'staff' as SourceFilter, label: `Staff: ${staffCount}`, icon: <UserCheck className="size-3" /> },
+            { key: 'qr' as SourceFilter, label: `QR: ${qrCount}`, icon: <QrCode className="size-3" /> },
+          ] as {key:SourceFilter;label:string;icon:React.ReactNode}[]).map(s => (
+            <button key={s.key} onClick={() => setSourceFilter(s.key)}
+              className={cn('flex min-h-7 items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-black transition-all',
+                sourceFilter === s.key ? 'bg-foreground text-background' : 'border border-border bg-muted/60 text-muted-foreground active:scale-95')}>
+              {s.icon}{s.label}
+            </button>
+          ))}
+
+          <span className="mx-0.5 hidden h-5 w-px bg-border sm:block" aria-hidden="true" />
+
+          {STATUS_TABS.map(tab => {
+            const isActive = activeTab === tab.key;
+            const count = sourceFilter === 'all'
+              ? regularOrders.filter(o => matchesStatusTab(o, tab.key)).length
+              : regularOrders.filter(o => matchesStatusTab(o, tab.key) && o.orderSource === sourceFilter).length;
+            return (
+              <button key={tab.key} onClick={() => switchTab(tab.key)}
+                className={cn('flex min-h-7 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-black whitespace-nowrap transition-all active:scale-95',
+                  isActive ? 'border-emerald-700 bg-emerald-700 text-white shadow-sm' : 'border-border bg-card text-foreground')}>
+                <span className={cn('size-1.5 rounded-full shrink-0', isActive ? 'bg-white/85' : tab.dotColor)} />
+                {tab.label}
+                {count > 0 && <span className={cn('rounded-full px-1.5 py-0.5 text-[9px] leading-none', isActive ? 'bg-white/20 text-white' : 'bg-muted text-muted-foreground')}>{count}</span>}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Content */}
+      {activeTab === 'new_bill' ? (
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><NewBillPanel /></div>
+      ) : activeTab === 'advance' ? (
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><AdvanceOrderPanel onCreated={() => {}} advanceOrders={advanceOrders} /></div>
+      ) : activeTab === 'payment_edit' ? (
+        <div className="flex-1 min-h-0 overflow-hidden"><RetailPaymentModeEditTab orders={orders} /></div>
+      ) : activeTab === 'alerts' ? (
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
+          <div className="rounded-2xl border border-red-200 bg-red-50 p-4"><h2 className="font-display text-lg font-black text-red-800">Today's Delivery Alerts</h2><p className="text-xs text-red-700 mt-1">Only advance orders scheduled for delivery today are shown.</p></div>
+          {todayDeliveryAlerts.length === 0 ? <EmptyState icon={<Bell className="size-8" />} title="No deliveries due today" description="Advance orders scheduled for today will appear here." /> : todayDeliveryAlerts.map(o => <OrderCard key={o.id} order={o} showActions counterOpenedToday={counterOpenedToday} />)}
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+          {filtered.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-24 gap-4">
+              <div className="size-20 rounded-3xl bg-muted flex items-center justify-center">
+                <Inbox className="size-10 text-muted-foreground/40" />
+              </div>
+              <div className="text-center">
+                <p className="font-body font-semibold text-foreground">No orders here</p>
+                <p className="text-sm font-body text-muted-foreground mt-1">
+                  {sourceFilter !== 'all'
+                    ? `No ${activeTab} orders from ${sourceFilter === 'qr' ? 'QR' : 'Staff'} right now`
+                    : activeTab === 'pending' ? 'Waiting for new orders...' : `No ${activeTab} orders right now`}
+                </p>
+                {sourceFilter !== 'all' && (
+                  <button
+                    onClick={() => setSourceFilter('all')}
+                    className="mt-3 text-sm font-body font-semibold text-primary underline underline-offset-2 active:opacity-70"
+                  >
+                    Clear filter - show all sources
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            filtered.map(order => <OrderCard key={order.id} order={order} showActions counterOpenedToday={counterOpenedToday} />)
+          )}
+        </div>
+      )}
+    </div>
+  );
+
+}
