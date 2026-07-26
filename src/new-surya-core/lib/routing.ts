@@ -6,7 +6,7 @@ import type { UserRole } from '@/types';
 
 export function getRoleDefaultPath(role: UserRole): string {
   switch (role) {
-    case 'admin':          return '/admin?suite=admin-management';
+    case 'admin':          return '/admin';
     case 'executive':          return '/admin?suite=executive-control';
 
     case 'kitchen':        return '/kitchen';
