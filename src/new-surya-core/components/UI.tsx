@@ -163,8 +163,8 @@ export function DashboardTabs<T extends string>({ tabs, active, setActive }: { t
   }, [active]);
   const move = (direction: number) => stripRef.current?.scrollBy({ left: direction * 420, behavior: 'smooth' });
 
-  return <div className="no-print sticky top-[68px] z-30 mb-5 overflow-hidden rounded-lg border border-stone-200 bg-white/95 shadow-[0_4px_18px_rgba(28,25,23,.08)] backdrop-blur">
-    <div className="flex items-center gap-3 border-b border-stone-100 bg-stone-50/90 px-3 py-2">
+  return <div className="no-print lg:sticky lg:top-[84px] lg:float-left lg:mr-6 lg:mb-4 lg:w-64 mb-5 overflow-hidden rounded-lg border border-stone-200 bg-white/95 shadow-[0_4px_18px_rgba(28,25,23,.08)] backdrop-blur lg:max-h-[calc(100vh-104px)]">
+    <div className="flex items-center gap-3 border-b border-stone-100 bg-stone-50/90 px-3 py-2 lg:hidden">
       <div className="min-w-0 flex-1"><p className="text-[10px] font-bold text-stone-500">ACTIVE MODULE</p><p className="truncate text-sm font-extrabold text-stone-950">{active}</p></div>
       <span className="hidden text-xs font-semibold text-stone-500 sm:block">{tabs.length} modules</span>
       <div className="relative w-[190px] sm:w-[230px]">
@@ -174,12 +174,15 @@ export function DashboardTabs<T extends string>({ tabs, active, setActive }: { t
         <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-stone-400" />
       </div>
     </div>
-    <div className="relative hidden items-center md:flex">
+    <div className="relative flex items-center md:flex lg:hidden">
       <button type="button" title="Previous modules" aria-label="Previous modules" onClick={() => move(-1)} className="grid size-11 shrink-0 place-items-center border-r border-stone-200 bg-white text-stone-600 transition hover:bg-stone-100"><ChevronLeft className="size-4" /></button>
       <div ref={stripRef} className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-2">
         {tabs.map(tab => <button key={tab} data-current={active === tab} onClick={() => setActive(tab)} className={`min-h-11 shrink-0 rounded-md border px-3.5 text-sm font-semibold transition duration-200 ${active === tab ? 'border-[#a16207] bg-[#a16207] text-white shadow-sm' : 'border-transparent text-stone-600 hover:border-stone-200 hover:bg-stone-100 hover:text-stone-950'}`}>{tab}</button>)}
       </div>
       <button type="button" title="More modules" aria-label="More modules" onClick={() => move(1)} className="grid size-11 shrink-0 place-items-center border-l border-stone-200 bg-white text-stone-600 transition hover:bg-stone-100"><ChevronRight className="size-4" /></button>
+    </div>
+    <div className="hidden lg:flex lg:max-h-[calc(100vh-104px)] lg:flex-col lg:gap-1 lg:overflow-y-auto lg:p-2">
+      {tabs.map(tab => <button key={tab} data-current={active === tab} onClick={() => setActive(tab)} className={`min-h-11 w-full shrink-0 rounded-md border px-3.5 text-left text-sm font-semibold transition duration-200 ${active === tab ? 'border-[#a16207] bg-[#a16207] text-white shadow-sm' : 'border-transparent text-stone-600 hover:border-stone-200 hover:bg-stone-100 hover:text-stone-950'}`}>{tab}</button>)}
     </div>
   </div>;
 }
