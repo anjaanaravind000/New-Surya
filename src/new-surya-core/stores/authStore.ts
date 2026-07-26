@@ -52,10 +52,18 @@ export const useAuthStore = create<AuthState>()(
       },
 
       login: async (username, password) => {
-        const { data, error } = await supabase.rpc('login_staff_secure', {
+        const LOGIN_TIMEOUT_MS = 15000;
+        const rpcPromise = supabase.rpc('login_staff_secure', {
           p_username: username,
           p_password: password,
           p_device_info: navigator.userAgent,
+        });
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Login request timed out. Please check your connection and try again.')), LOGIN_TIMEOUT_MS)
+        );
+        const { data, error } = await Promise.race([rpcPromise, timeoutPromise]).catch(err => {
+          console.error('[authStore] login_staff_secure failed or timed out:', err);
+          return { data: null, error: err };
         });
         const row = Array.isArray(data) ? data[0] : data;
         if (error || !row) return false;
