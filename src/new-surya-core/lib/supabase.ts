@@ -11,6 +11,8 @@ if (!supabaseUrl || !supabaseAnonKey) {
   );
 }
 
+const REQUEST_TIMEOUT_MS = 15000;
+
 const sessionAwareFetch: typeof fetch = async (input, init: RequestInit = {}) => {
   const headers = new Headers(init.headers ?? {});
   const requestUrl = typeof input === 'string'
@@ -29,8 +31,22 @@ const sessionAwareFetch: typeof fetch = async (input, init: RequestInit = {}) =>
     if (token) headers.set('x-retail-session', token);
     headers.set('x-client-app', 'new-surya-web');
   }
+
+  // BUG FIX: without a timeout, a slow/unreachable backend hangs this fetch
+  // forever, and every component awaiting it (or its store) is stuck in a
+  // permanent loading state with no error ever surfacing. Abort and let the
+  // normal error-handling path below run instead.
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const externalSignal = init.signal;
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+
   try {
-    const response = await fetch(input, { ...init, headers });
+    const response = await fetch(input, { ...init, headers, signal: controller.signal });
+    clearTimeout(timeoutId);
     if (typeof window !== 'undefined') {
       if (!response.ok && !isDiagnosticRequest) {
         // Peek at the body (without consuming it for the real caller) to see if this
@@ -74,8 +90,11 @@ const sessionAwareFetch: typeof fetch = async (input, init: RequestInit = {}) =>
     }
     return response;
   } catch (error) {
-    if (typeof window !== 'undefined' && !isDiagnosticRequest) window.dispatchEvent(new CustomEvent('retail:data-error', { detail: { message: error instanceof Error ? error.message : 'Network request failed', module: 'Network', at: Date.now() } }));
-    throw error;
+    clearTimeout(timeoutId);
+    const timedOut = error instanceof DOMException && error.name === 'AbortError' && !externalSignal?.aborted;
+    const message = timedOut ? `Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s. Please check your connection and try again.` : (error instanceof Error ? error.message : 'Network request failed');
+    if (typeof window !== 'undefined' && !isDiagnosticRequest) window.dispatchEvent(new CustomEvent('retail:data-error', { detail: { message, module: 'Network', at: Date.now() } }));
+    throw timedOut ? new Error(message) : error;
   }
 };
 
