@@ -163,7 +163,7 @@ export function DashboardTabs<T extends string>({ tabs, active, setActive }: { t
   }, [active]);
   const move = (direction: number) => stripRef.current?.scrollBy({ left: direction * 420, behavior: 'smooth' });
 
-  return <div className="no-print lg:sticky lg:top-[84px] lg:float-left lg:mr-6 lg:mb-4 lg:w-64 mb-5 overflow-hidden rounded-lg border border-stone-200 bg-white/95 shadow-[0_4px_18px_rgba(28,25,23,.08)] backdrop-blur lg:max-h-[calc(100vh-104px)]">
+  return <div className="no-print lg:fixed lg:left-[272px] lg:top-[84px] lg:z-20 lg:mr-0 lg:w-64 mb-5 overflow-hidden rounded-lg border border-stone-200 bg-white/95 shadow-[0_4px_18px_rgba(28,25,23,.08)] backdrop-blur lg:max-h-[calc(100vh-104px)] lg:rounded-none lg:border-0 lg:border-r lg:border-white/10 lg:bg-[#1c1917] lg:shadow-none lg:backdrop-blur-none">
     <div className="flex items-center gap-3 border-b border-stone-100 bg-stone-50/90 px-3 py-2 lg:hidden">
       <div className="min-w-0 flex-1"><p className="text-[10px] font-bold text-stone-500">ACTIVE MODULE</p><p className="truncate text-sm font-extrabold text-stone-950">{active}</p></div>
       <span className="hidden text-xs font-semibold text-stone-500 sm:block">{tabs.length} modules</span>
@@ -182,7 +182,7 @@ export function DashboardTabs<T extends string>({ tabs, active, setActive }: { t
       <button type="button" title="More modules" aria-label="More modules" onClick={() => move(1)} className="grid size-11 shrink-0 place-items-center border-l border-stone-200 bg-white text-stone-600 transition hover:bg-stone-100"><ChevronRight className="size-4" /></button>
     </div>
     <div className="hidden lg:flex lg:max-h-[calc(100vh-104px)] lg:flex-col lg:gap-1 lg:overflow-y-auto lg:p-2">
-      {tabs.map(tab => <button key={tab} data-current={active === tab} onClick={() => setActive(tab)} className={`min-h-11 w-full shrink-0 rounded-md border px-3.5 text-left text-sm font-semibold transition duration-200 ${active === tab ? 'border-[#a16207] bg-[#a16207] text-white shadow-sm' : 'border-transparent text-stone-600 hover:border-stone-200 hover:bg-stone-100 hover:text-stone-950'}`}>{tab}</button>)}
+      {tabs.map(tab => <button key={tab} data-current={active === tab} onClick={() => setActive(tab)} className={`min-h-11 w-full shrink-0 rounded-lg border px-3.5 text-left text-sm font-semibold transition duration-200 ${active === tab ? 'border-[#d4a64f]/45 bg-[#a16207]/25 text-[#f8d996] shadow-sm' : 'border-transparent text-stone-300 hover:border-white/10 hover:bg-white/[0.07] hover:text-white'}`}>{tab}</button>)}
     </div>
   </div>;
 }
@@ -321,7 +321,7 @@ export function Shell({ title, subtitle, children }: { title: string; subtitle: 
         </div>
       </header>
 
-      <motion.main initial={reduceMotion ? false : { opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .24, ease: 'easeOut' }} className="mx-auto w-full max-w-[1780px] px-3 pb-10 pt-6 sm:px-5 lg:px-7">
+      <motion.main initial={reduceMotion ? false : { opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .24, ease: 'easeOut' }} className="mx-auto w-full max-w-[1780px] px-3 pb-10 pt-6 sm:px-5 lg:px-7 lg:pl-[280px]">
         <div className="mb-5 flex flex-col gap-2 border-b border-slate-200 pb-5 sm:flex-row sm:items-end sm:justify-between">
           <div><p className="mb-1 text-[10px] font-bold text-[#9b671d]">{activeNav.label.toUpperCase()} WORKSPACE</p><h2 className="text-2xl font-extrabold leading-tight text-slate-950 dark:text-white sm:text-[28px]">{title}</h2>
           <p className="mt-1 max-w-4xl text-sm leading-6 text-slate-500">{subtitle}</p>
