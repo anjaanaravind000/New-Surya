@@ -1,4 +1,5 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { motion, useReducedMotion } from 'framer-motion';
 import {
@@ -157,35 +158,43 @@ export function DataTable<T extends object>({ rows, columns, empty = 'No records
 
 export function DashboardTabs<T extends string>({ tabs, active, setActive }: { tabs: readonly T[]; active: T; setActive: (tab: T) => void }) {
   const stripRef = React.useRef<HTMLDivElement>(null);
+  const [sidebarSlot, setSidebarSlot] = React.useState<HTMLElement | null>(null);
+  React.useEffect(() => {
+    setSidebarSlot(document.getElementById('sidebar-modules-slot'));
+  }, []);
   React.useEffect(() => {
     const current = stripRef.current?.querySelector<HTMLButtonElement>('[data-current="true"]');
     current?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
   }, [active]);
   const move = (direction: number) => stripRef.current?.scrollBy({ left: direction * 420, behavior: 'smooth' });
 
-  return <div className="no-print lg:fixed lg:left-0 lg:top-[92px] lg:z-40 lg:mr-0 lg:w-[272px] mb-5 overflow-hidden rounded-lg border border-stone-200 bg-white/95 shadow-[0_4px_18px_rgba(28,25,23,.08)] backdrop-blur lg:bottom-[132px] lg:rounded-none lg:border-0 lg:bg-transparent lg:shadow-none lg:backdrop-blur-none">
-    <div className="flex items-center gap-3 border-b border-stone-100 bg-stone-50/90 px-3 py-2 lg:hidden">
-      <div className="min-w-0 flex-1"><p className="text-[10px] font-bold text-stone-500">ACTIVE MODULE</p><p className="truncate text-sm font-extrabold text-stone-950">{active}</p></div>
-      <span className="hidden text-xs font-semibold text-stone-500 sm:block">{tabs.length} modules</span>
-      <div className="relative w-[190px] sm:w-[230px]">
-        <select aria-label="Jump to module" className="h-11 w-full appearance-none rounded-md border border-stone-300 bg-white px-3 pr-9 text-sm font-bold text-stone-900 outline-none focus:border-amber-700 focus:ring-4 focus:ring-amber-100" value={active} onChange={event => setActive(event.target.value as T)}>
-          {tabs.map(tab => <option key={tab} value={tab}>{tab}</option>)}
-        </select>
-        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-stone-400" />
-      </div>
-    </div>
-    <div className="relative flex items-center md:flex lg:hidden">
-      <button type="button" title="Previous modules" aria-label="Previous modules" onClick={() => move(-1)} className="grid size-11 shrink-0 place-items-center border-r border-stone-200 bg-white text-stone-600 transition hover:bg-stone-100"><ChevronLeft className="size-4" /></button>
-      <div ref={stripRef} className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-2">
-        {tabs.map(tab => <button key={tab} data-current={active === tab} onClick={() => setActive(tab)} className={`min-h-11 shrink-0 rounded-md border px-3.5 text-sm font-semibold transition duration-200 ${active === tab ? 'border-[#a16207] bg-[#a16207] text-white shadow-sm' : 'border-transparent text-stone-600 hover:border-stone-200 hover:bg-stone-100 hover:text-stone-950'}`}>{tab}</button>)}
-      </div>
-      <button type="button" title="More modules" aria-label="More modules" onClick={() => move(1)} className="grid size-11 shrink-0 place-items-center border-l border-stone-200 bg-white text-stone-600 transition hover:bg-stone-100"><ChevronRight className="size-4" /></button>
-    </div>
-    <div className="hidden lg:flex lg:h-full lg:flex-col lg:gap-1 lg:overflow-y-auto lg:px-3 lg:py-2">
-      <p className="px-3 pb-1 text-[10px] font-bold text-slate-500">WORKSPACE MODULES</p>
-      {tabs.map(tab => <button key={tab} data-current={active === tab} onClick={() => setActive(tab)} className={`min-h-11 w-full shrink-0 rounded-lg border px-3.5 text-left text-sm font-semibold transition duration-200 ${active === tab ? 'border-[#d4a64f]/45 bg-[#a16207]/25 text-[#f8d996] shadow-sm' : 'border-transparent text-stone-300 hover:border-white/10 hover:bg-white/[0.07] hover:text-white'}`}>{tab}</button>)}
-    </div>
+  const desktopList = <div className="flex flex-col gap-1 py-2">
+    <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-[.14em] text-amber-400/90">Workspace modules</p>
+    {tabs.map(tab => <button key={tab} data-current={active === tab} onClick={() => setActive(tab)} className={`min-h-11 w-full shrink-0 rounded-lg border px-3.5 text-left text-sm font-semibold transition duration-200 ${active === tab ? 'border-[#d4a64f]/45 bg-[#a16207]/25 text-[#f8d996] shadow-sm' : 'border-transparent text-stone-300 hover:border-white/10 hover:bg-white/[0.07] hover:text-white'}`}>{tab}</button>)}
   </div>;
+
+  return <>
+    <div className="no-print mb-5 overflow-hidden rounded-lg border border-stone-200 bg-white/95 shadow-[0_4px_18px_rgba(28,25,23,.08)] backdrop-blur lg:hidden">
+      <div className="flex items-center gap-3 border-b border-stone-100 bg-stone-50/90 px-3 py-2">
+        <div className="min-w-0 flex-1"><p className="text-[10px] font-bold text-stone-500">ACTIVE MODULE</p><p className="truncate text-sm font-extrabold text-stone-950">{active}</p></div>
+        <span className="hidden text-xs font-semibold text-stone-500 sm:block">{tabs.length} modules</span>
+        <div className="relative w-[190px] sm:w-[230px]">
+          <select aria-label="Jump to module" className="h-11 w-full appearance-none rounded-md border border-stone-300 bg-white px-3 pr-9 text-sm font-bold text-stone-900 outline-none focus:border-amber-700 focus:ring-4 focus:ring-amber-100" value={active} onChange={event => setActive(event.target.value as T)}>
+            {tabs.map(tab => <option key={tab} value={tab}>{tab}</option>)}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-stone-400" />
+        </div>
+      </div>
+      <div className="relative flex items-center">
+        <button type="button" title="Previous modules" aria-label="Previous modules" onClick={() => move(-1)} className="grid size-11 shrink-0 place-items-center border-r border-stone-200 bg-white text-stone-600 transition hover:bg-stone-100"><ChevronLeft className="size-4" /></button>
+        <div ref={stripRef} className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-2">
+          {tabs.map(tab => <button key={tab} data-current={active === tab} onClick={() => setActive(tab)} className={`min-h-11 shrink-0 rounded-md border px-3.5 text-sm font-semibold transition duration-200 ${active === tab ? 'border-[#a16207] bg-[#a16207] text-white shadow-sm' : 'border-transparent text-stone-600 hover:border-stone-200 hover:bg-stone-100 hover:text-stone-950'}`}>{tab}</button>)}
+        </div>
+        <button type="button" title="More modules" aria-label="More modules" onClick={() => move(1)} className="grid size-11 shrink-0 place-items-center border-l border-stone-200 bg-white text-stone-600 transition hover:bg-stone-100"><ChevronRight className="size-4" /></button>
+      </div>
+    </div>
+    {sidebarSlot ? createPortal(desktopList, sidebarSlot) : null}
+  </>;
 }
 
 export function ActionButton({ children, onClick, tone = 'slate', disabled = false, title, className = '', type = 'button' }: { children: React.ReactNode; onClick?: () => void; tone?: Tone; disabled?: boolean; title?: string; className?: string; type?: 'button' | 'submit' }) {
