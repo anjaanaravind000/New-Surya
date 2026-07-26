@@ -1097,9 +1097,9 @@ export default function WholesaleCreditOperations() {
         supabase.from('wholesale_shops').select('id, shop_name, whatsapp_number, address, is_active, created_at, updated_at, discount_percent').eq('is_active', true).order('shop_name', { ascending: true }),
         supabase.from('wholesale_shop_price_lists').select('id, shop_id, item_name, item_unit, unit_price, is_active, updated_at').eq('is_active', true),
         supabase.from('wholesale_orders').select('id, order_number, shop_id, shop_name, shop_whatsapp, shop_address, status, subtotal, created_by, created_at, received_at, bill_id, notes').order('created_at', { ascending: false }).limit(250),
-        supabase.from('wholesale_order_items').select('id, order_id, item_name, unit, quantity, unit_price, line_total, dispatched_quantity, received_quantity').order('created_at', { ascending: true }).limit(10000),
+        supabase.from('wholesale_order_items').select('id, order_id, item_name, unit, quantity, unit_price, line_total, dispatched_quantity, received_quantity').order('created_at', { ascending: false }).limit(2000),
         supabase.from('wholesale_bills').select('id, bill_no, order_id, shop_id, shop_name, shop_whatsapp, subtotal, paid_amount, credit_amount, payment_type, payment_mode, due_date, status, confirmed_by, confirmed_at, created_at, whatsapp_status').order('created_at', { ascending: false }).limit(250),
-        supabase.from('wholesale_bill_items').select('id, bill_id, item_name, unit, quantity, unit_price, line_total').order('created_at', { ascending: true }).limit(10000),
+        supabase.from('wholesale_bill_items').select('id, bill_id, item_name, unit, quantity, unit_price, line_total').order('created_at', { ascending: false }).limit(2000),
         // FIX (MD Bug #21): now that branch_credit_sales has a credit_type column
         // (added by migration 20260613_0004_wholesale_credit_type.sql), fetch all rows.
         // The WholesaleCreditTab already shows wholesale (shop-supply) and retail separately
@@ -1663,8 +1663,11 @@ export default function WholesaleCreditOperations() {
 
 
   return (
-    <div className="dashboard-screen min-h-[calc(100dvh-72px)] min-w-0 overflow-x-hidden bg-slate-50/50">
-      <main className="min-w-0 p-3 sm:p-4 md:p-5 xl:p-6">
+    <div className="dashboard-screen flex min-h-[calc(100dvh-72px)] min-w-0 overflow-x-hidden bg-slate-50/50">
+      <aside className="hidden lg:block w-64 shrink-0 border-r border-slate-200 bg-slate-950 p-3 xl:w-72">
+        <Sidebar tabs={filteredTabs} active={tab} setActive={setTab} />
+      </aside>
+      <main className="min-w-0 flex-1 p-3 sm:p-4 md:p-5 xl:p-6">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <div className="lg:hidden min-w-0 flex-1 rounded-2xl bg-slate-950 p-2 text-white overflow-x-auto">
               <Sidebar tabs={filteredTabs} active={tab} setActive={setTab} />
