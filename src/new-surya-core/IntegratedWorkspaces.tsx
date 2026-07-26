@@ -2,6 +2,7 @@ import type { ComponentType } from 'react';
 import { lazy, Suspense } from 'react';
 import { AuthProvider } from './state/AuthContext';
 import { BakeryStoreProvider } from './state/BakeryStore';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import KitchenDashboard from './pages/KitchenDashboard';
 import BranchDashboard from './pages/BranchDashboard';
 import BranchInchargeDashboard from './pages/BranchInchargeDashboard';
@@ -15,9 +16,11 @@ function withCoreProviders(Page: ComponentType) {
       <AuthProvider>
         <BakeryStoreProvider>
           <div className="new-surya-core-root">
-            <Suspense fallback={<div className="grid min-h-screen place-items-center text-sm font-semibold text-stone-500">Loading workspace…</div>}>
-              <Page />
-            </Suspense>
+            <ErrorBoundary>
+              <Suspense fallback={<div className="grid min-h-screen place-items-center text-sm font-semibold text-stone-500">Loading workspace…</div>}>
+                <Page />
+              </Suspense>
+            </ErrorBoundary>
           </div>
         </BakeryStoreProvider>
       </AuthProvider>
