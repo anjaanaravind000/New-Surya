@@ -555,7 +555,16 @@ const BakeryStoreContext = createContext<StoreContext | null>(null);
 
 export function BakeryStoreProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(reducer, undefined, loadInitialState);
-  useEffect(() => { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }, [state]);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      } catch (err) {
+        console.error('[BakeryStore] failed to persist state:', err);
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [state]);
   useEffect(() => {
     const onError = (event: ErrorEvent) => dispatch({ type:'log', event:{ level:'error', module:'Window Error', message:event.message, detail:event.filename } });
     const onUnhandled = (event: PromiseRejectionEvent) => dispatch({ type:'log', event:{ level:'error', module:'Promise Rejection', message:String(event.reason) } });
