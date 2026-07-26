@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { supabase } from '@/lib/supabase';
 import {
   Activity, AlertTriangle, Bot, CheckCircle2, ChevronDown, ChevronRight, CircleDollarSign,
@@ -410,11 +411,21 @@ export default function CompleteFeatureCenter({ dashboard, initialModule }: { da
     } catch (error) { setBusy(false); setNotice(error instanceof Error ? `Import failed: ${error.message}` : 'Import failed.'); }
   };
 
-  return <div className="grid gap-5 xl:grid-cols-[280px_minmax(0,1fr)]">
-    <aside className="no-print self-start overflow-hidden rounded-3xl border border-amber-200/70 bg-white/90 shadow-[0_24px_80px_-45px_rgba(83,46,15,.55)] backdrop-blur dark:border-white/10 dark:bg-slate-950/75 xl:sticky xl:top-[150px] xl:max-h-[calc(100vh-175px)] xl:overflow-y-auto">
+  const sidebarSlot = typeof document !== 'undefined' ? document.getElementById('sidebar-modules-slot') : null;
+  const moduleListNav = <div className="space-y-4 p-1">{Object.entries(groups).map(([group, names]) => <div key={group}><p className="px-2 text-[10px] font-black uppercase tracking-[.16em] text-slate-500 dark:text-white/40">{group}</p><div className="mt-1 space-y-1">{names.map(name => { const module = modules.find(item => item.name === name); if (!module) return null; const active = module.id === selected.id; return <button key={module.id} aria-current={active ? 'page' : undefined} onClick={() => setSelectedId(module.id)} className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-xs font-bold transition ${active ? 'bg-gradient-to-r from-amber-500 to-orange-600 text-white shadow-md shadow-orange-950/20' : 'text-slate-300 hover:bg-white/[0.07] hover:text-white'}`}><span className="truncate">{module.name}</span><ChevronRight className="size-3.5 shrink-0" /></button>; })}</div></div>)}</div>;
+
+  return <div className={sidebarSlot ? "grid gap-5" : "grid gap-5 xl:grid-cols-[280px_minmax(0,1fr)]"}>
+    {sidebarSlot ? createPortal(
+      <div>
+        <p className="px-3 text-[10px] font-black uppercase tracking-[.22em] text-amber-400">Complete feature centre</p>
+        <p className="px-3 pb-2 text-[11px] font-semibold text-slate-400">{modules.length} modules</p>
+        {moduleListNav}
+      </div>,
+      sidebarSlot
+    ) : <aside className="no-print self-start overflow-hidden rounded-3xl border border-amber-200/70 bg-white/90 shadow-[0_24px_80px_-45px_rgba(83,46,15,.55)] backdrop-blur dark:border-white/10 dark:bg-slate-950/75 xl:sticky xl:top-[150px] xl:max-h-[calc(100vh-175px)] xl:overflow-y-auto">
       <div className="border-b border-amber-100 bg-gradient-to-br from-amber-50 via-white to-orange-50 p-4 dark:border-white/10 dark:from-amber-950/30 dark:via-slate-950 dark:to-orange-950/20"><p className="text-[10px] font-black uppercase tracking-[.22em] text-orange-600">Complete feature centre</p><h3 className="mt-1 font-extrabold text-slate-950 dark:text-white">All modules</h3><p className="mt-1 text-xs leading-5 text-slate-500 dark:text-white/45">{modules.length} operational modules inside this dashboard.</p></div>
-      <div className="space-y-4 p-3">{Object.entries(groups).map(([group, names]) => <div key={group}><p className="px-2 text-[10px] font-black uppercase tracking-[.16em] text-slate-400">{group}</p><div className="mt-1 space-y-1">{names.map(name => { const module = modules.find(item => item.name === name); if (!module) return null; const active = module.id === selected.id; return <button key={module.id} aria-current={active ? 'page' : undefined} onClick={() => setSelectedId(module.id)} className={`flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-xs font-bold transition ${active ? 'bg-gradient-to-r from-amber-500 to-orange-600 text-white shadow-lg shadow-orange-950/15' : 'text-slate-600 hover:bg-amber-50 hover:text-slate-950 dark:text-white/55 dark:hover:bg-white/5 dark:hover:text-white'}`}><span>{module.name}</span><ChevronRight className="size-3.5 shrink-0" /></button>; })}</div></div>)}</div>
-    </aside>
+      <div className="p-3">{moduleListNav}</div>
+    </aside>}
 
     <section className="min-w-0 space-y-5" aria-busy={busy || syncState === 'loading'}>
       <div className="overflow-hidden rounded-[30px] border border-white/15 bg-[radial-gradient(circle_at_top_right,rgba(251,191,36,.25),transparent_35%),linear-gradient(135deg,#24150d_0%,#4a2815_50%,#113b31_100%)] p-5 text-white shadow-2xl shadow-amber-950/15 sm:p-6">

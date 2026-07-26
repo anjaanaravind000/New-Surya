@@ -281,6 +281,7 @@ export function Shell({ title, subtitle, children }: { title: string; subtitle: 
         <img src="/brand/new-surya-client-logo.jpg" alt="New Surya Sweets & Savouries" className="h-auto w-[210px] object-contain" />
         <button aria-label="Close navigation" className="ml-auto grid size-9 place-items-center rounded-md text-slate-300 hover:bg-white/10 lg:hidden" onClick={() => setMobileMenu(false)}><X className="size-5" /></button>
       </div>
+      <div id="sidebar-modules-slot" className="hidden min-h-0 flex-1 overflow-y-auto px-2 py-3 lg:block" />
       <div className="px-3 py-5 lg:hidden">
         <p className="px-3 text-[10px] font-bold text-slate-500">YOUR WORKSPACE</p>
         <nav className="mt-2 space-y-1">
