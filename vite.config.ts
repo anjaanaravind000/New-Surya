@@ -5,8 +5,11 @@ import path from "path";
 // https://vitejs.dev/config/
 export default defineConfig({
   server: {
-    host: "::",
-    port: 8080,
+    host: "0.0.0.0",
+    port: 3000,
+    strictPort: true,
+    allowedHosts: true,
+    hmr: { clientPort: 443 },
   },
   build: {
     sourcemap: false, // SEC-14: never expose source in production
