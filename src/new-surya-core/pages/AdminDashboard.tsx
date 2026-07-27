@@ -15,6 +15,7 @@ import { isExtensionTab, roleExtensionTabs } from '../lib/roleExtensions';
 import ExecutiveVisualizations from '../components/ExecutiveVisualizations';
 import CompleteFeatureCenter from '../components/CompleteFeatureCenter';
 import { AdminIntegratedFeature, InchargeIntegratedFeature, type AdminIntegratedModule } from '../components/IntegratedFeatureModules';
+import SalesForecastWidget from '../components/SalesForecastWidget';
 
 const existingTabs = [
   'Command', 
@@ -170,7 +171,39 @@ export default function AdminDashboard() {
   return <Shell title="New Surya Administration" subtitle="Live performance, approvals and operational health across every branch and production unit.">
     <DashboardTabs tabs={tabs} active={tab} setActive={setTab} />
     {notice && <div className="mb-4 flex flex-col gap-3 rounded-md border border-ink/10 bg-white p-4 shadow-sm md:flex-row md:items-center md:justify-between"><div className="flex items-center gap-3"><Pill tone={notice.level === 'error' ? 'red' : notice.level === 'warning' ? 'amber' : notice.level === 'info' ? 'blue' : 'green'}>{notice.level}</Pill><span className="text-sm font-bold text-ink">{notice.message}</span></div><ActionButton tone="slate" onClick={() => setNotice(null)}>Dismiss</ActionButton></div>}
-    {tab === 'Command' && <div className="space-y-5">
+    {tab === 'Command' && <div className="space-y-6">
+      {/* Morning briefing hero */}
+      <div data-testid="admin-morning-briefing" className="pn-card relative overflow-hidden">
+        <div className="pn-card-body flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
+          <div className="min-w-0">
+            <p className="text-[10px] font-bold uppercase tracking-[.24em] text-[hsl(var(--pn-gold))]">Today at a glance · {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: '2-digit', month: 'short' })}</p>
+            <h3 className="font-display mt-1.5 bg-gradient-to-r from-[hsl(var(--pn-cream))] via-[hsl(var(--pn-gold))] to-[hsl(var(--pn-rose))] bg-clip-text text-2xl font-black leading-tight text-transparent sm:text-3xl">
+              {(() => { const h = new Date().getHours(); return h < 12 ? 'Good morning, Executive' : h < 17 ? 'Good afternoon, Executive' : 'Good evening, Executive'; })()}
+            </h3>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-[hsl(var(--pn-cream-mute))]">
+              You have <b className="text-[hsl(var(--pn-gold))]">{metrics.pendingProduction.length}</b> production plans awaiting approval, <b className="text-[hsl(var(--pn-berry))]">{metrics.lowIngredients.length}</b> low-stock ingredients, and <b className="text-[hsl(var(--pn-rose))]">{metrics.onlineNew}</b> new online orders. Sales today: <b className="text-[hsl(var(--pn-pistachio))]">{money(metrics.salesToday)}</b>.
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <ActionButton tone="amber" data-testid="jump-approvals" onClick={() => setTab('Production Approval')}><ClipboardCheck className="size-4" />Review approvals ({metrics.pendingProduction.length})</ActionButton>
+              <ActionButton tone="slate" onClick={() => setTab('Inventory')}><Boxes className="size-4" />Fix low stock</ActionButton>
+              <ActionButton tone="slate" onClick={() => setTab('Reports & BI')}><BarChart3 className="size-4" />Open reports</ActionButton>
+            </div>
+          </div>
+          <div className="grid shrink-0 grid-cols-2 gap-3 md:min-w-[280px]">
+            <div className="rounded-2xl border border-[hsl(var(--pn-gold))]/20 bg-gradient-to-br from-[hsl(var(--pn-gold))]/12 to-transparent p-3">
+              <p className="text-[10px] font-bold uppercase tracking-[.16em] text-[hsl(var(--pn-cream-mute))]">Live sessions</p>
+              <p className="font-display mt-1 text-2xl font-black text-[hsl(var(--pn-gold))]">{metrics.branchHealth.filter(row => row.open).length}<span className="text-sm text-[hsl(var(--pn-cream-mute))]">/{metrics.branchHealth.length}</span></p>
+              <p className="mt-1 text-[10px] text-[hsl(var(--pn-cream-mute))]">counters open</p>
+            </div>
+            <div className="rounded-2xl border border-[hsl(var(--pn-pistachio))]/25 bg-gradient-to-br from-[hsl(var(--pn-pistachio))]/12 to-transparent p-3">
+              <p className="text-[10px] font-bold uppercase tracking-[.16em] text-[hsl(var(--pn-cream-mute))]">Refunds</p>
+              <p className="font-display mt-1 text-2xl font-black text-[hsl(var(--pn-pistachio))]">{money(metrics.refundsToday)}</p>
+              <p className="mt-1 text-[10px] text-[hsl(var(--pn-cream-mute))]">today</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <Metric icon={Coins} label="Sales" value={money(metrics.salesToday)} helper="Live POS, online and credit sales from all counters." tone="green" />
         <Metric icon={AlertTriangle} label="Low stock" value={String(metrics.lowIngredients.length)} helper="Raw materials at or below minimum stock." tone="red" />
@@ -178,15 +211,18 @@ export default function AdminDashboard() {
         <Metric icon={ShoppingCart} label="Online new" value={String(metrics.onlineNew)} helper="Aggregator, website and QR orders waiting." tone="purple" />
         <Metric icon={DatabaseZap} label="Credit due" value={money(metrics.creditDue)} helper="Customer credit still pending collection." tone="blue" />
       </div>
+
+      <SalesForecastWidget />
+
       <div className="grid gap-5 xl:grid-cols-[1.25fr_.75fr]">
         <Card title="Executive attention board" description="Shows the highest-priority actions across the business.">
           <div className="grid gap-3 md:grid-cols-2">
-            {metrics.pendingProduction.map(plan => <div key={plan.id} className="rounded-2xl bg-white/70 p-4 ring-1 ring-white/70"><Pill tone="amber">Needs approval</Pill><h4 className="mt-2 font-black">{products[plan.productId]?.name}</h4><p className="text-sm text-slate-600">{plan.requestedQty} {products[plan.productId]?.unit} · {plan.notes}</p><ActionButton tone="green" onClick={() => dispatch({ type:'approve-production', planId:plan.id, adminName:'New Surya Executive' })}>Approve + deduct raw material</ActionButton></div>)}
-            {metrics.lowIngredients.map(ing => <div key={ing.id} className="rounded-2xl bg-white/70 p-4 ring-1 ring-white/70"><Pill tone="red">Low stock</Pill><h4 className="mt-2 font-black">{ing.name}</h4><p className="text-sm text-slate-600">Available {ing.currentStock} {ing.unit}; minimum {ing.minStock} {ing.unit}</p><ActionButton tone="blue" onClick={() => dispatch({ type:'create-purchase-order', po:{ supplierId:ing.supplierId ?? state.suppliers[0].id, createdBy:'New Surya Executive', expectedDate:new Date(Date.now()+48*3600_000).toISOString().slice(0,10), status:'draft', lines:[{ ingredientId:ing.id, qty:ing.reorderQty, rate:ing.unitCost }] } })}>Create PO</ActionButton></div>)}
+            {metrics.pendingProduction.map(plan => <div key={plan.id} className="rounded-2xl border border-[hsl(var(--pn-gold))]/15 bg-gradient-to-br from-white/[.04] to-transparent p-4"><Pill tone="amber">Needs approval</Pill><h4 className="mt-2 font-black text-[hsl(var(--pn-cream))]">{products[plan.productId]?.name}</h4><p className="text-sm text-[hsl(var(--pn-cream-mute))]">{plan.requestedQty} {products[plan.productId]?.unit} · {plan.notes}</p><ActionButton tone="green" className="mt-3" onClick={() => dispatch({ type:'approve-production', planId:plan.id, adminName:'New Surya Executive' })}>Approve + deduct raw material</ActionButton></div>)}
+            {metrics.lowIngredients.map(ing => <div key={ing.id} className="rounded-2xl border border-[hsl(var(--pn-berry))]/25 bg-gradient-to-br from-[hsl(var(--pn-berry))]/8 to-transparent p-4"><Pill tone="red">Low stock</Pill><h4 className="mt-2 font-black text-[hsl(var(--pn-cream))]">{ing.name}</h4><p className="text-sm text-[hsl(var(--pn-cream-mute))]">Available {ing.currentStock} {ing.unit}; minimum {ing.minStock} {ing.unit}</p><ActionButton tone="blue" className="mt-3" onClick={() => dispatch({ type:'create-purchase-order', po:{ supplierId:ing.supplierId ?? state.suppliers[0].id, createdBy:'New Surya Executive', expectedDate:new Date(Date.now()+48*3600_000).toISOString().slice(0,10), status:'draft', lines:[{ ingredientId:ing.id, qty:ing.reorderQty, rate:ing.unitCost }] } })}>Create PO</ActionButton></div>)}
           </div>
         </Card>
         <Card title="Branch health" description="Counter, stock value, online queue and expiry risk.">
-          <div className="space-y-3">{metrics.branchHealth.map(row => <div key={row.branch.id} className="rounded-2xl bg-white/70 p-3 ring-1 ring-white/70"><div className="flex justify-between gap-2"><b className="text-sm">{row.branch.name}</b><Pill tone={row.open ? 'green' : 'amber'}>{row.open ? 'counter open' : 'closed'}</Pill></div><p className="mt-1 text-xs text-slate-500">Stock value {money(row.stockValue)} · online new {row.onlineNew} · expiry risk {row.expiryRisk}</p><MiniBar label="Stock health" value={Math.min(100, row.stockValue/500)} max={100} tone={row.expiryRisk ? 'amber' : 'green'} /></div>)}</div>
+          <div className="space-y-3">{metrics.branchHealth.map(row => <div key={row.branch.id} className="rounded-2xl border border-[hsl(var(--pn-gold))]/15 bg-gradient-to-br from-white/[.04] to-transparent p-3"><div className="flex justify-between gap-2"><b className="text-sm text-[hsl(var(--pn-cream))]">{row.branch.name}</b><Pill tone={row.open ? 'green' : 'amber'}>{row.open ? 'counter open' : 'closed'}</Pill></div><p className="mt-1 text-xs text-[hsl(var(--pn-cream-mute))]">Stock value {money(row.stockValue)} · online new {row.onlineNew} · expiry risk {row.expiryRisk}</p><MiniBar label="Stock health" value={Math.min(100, row.stockValue/500)} max={100} tone={row.expiryRisk ? 'amber' : 'green'} /></div>)}</div>
         </Card>
       </div>
     </div>}
