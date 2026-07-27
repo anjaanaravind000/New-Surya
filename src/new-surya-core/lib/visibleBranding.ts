@@ -9,7 +9,7 @@ const visibleBrandReplacements: Array<[RegExp, string]> = [
   [/\bPRIMARY_OUTLET\s+Branch\b/gi, 'Retail Outlet'],
   [/\bPRIMARY_OUTLET\s+Order\b/gi, 'Ordering & Receiving'],
   [/\bWholesale\s+Branch\b/gi, 'Wholesale & Credit Operations'],
-  [/\bWholesale\b/gi, 'Wholesale Outlet'],
+  [/\bWholesale\b(?!\s+Outlet\b)/gi, 'Wholesale Outlet'],
   [/\bExecutive\s+Dashboard\b/gi, 'Executive Control'],
   [/\bStore\s+Dashboard\b/gi, 'Materials & Procurement'],
   [/\bBakery\s+Store\s+Control\b/gi, 'Materials & Procurement'],
