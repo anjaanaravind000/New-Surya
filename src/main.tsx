@@ -6,10 +6,12 @@ import '@/styles.css';
 
 try {
   const savedTheme = localStorage.getItem('new-surya-theme');
-  const darkPreferred = savedTheme === 'dark' || (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches);
-  document.documentElement.classList.toggle('dark', darkPreferred);
+  // Patisserie Noir defaults to dark unless the user has explicitly chosen 'light'.
+  const useDark = savedTheme !== 'light';
+  document.documentElement.classList.toggle('dark', useDark);
+  if (!savedTheme) localStorage.setItem('new-surya-theme', 'dark');
 } catch {
-  // Use the browser default when storage is unavailable.
+  document.documentElement.classList.add('dark');
 }
 
 window.addEventListener('vite:preloadError', () => window.location.reload());
