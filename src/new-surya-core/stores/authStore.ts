@@ -52,6 +52,36 @@ export const useAuthStore = create<AuthState>()(
       },
 
       login: async (username, password) => {
+        // Demo mode: when Supabase is not configured, allow local role logins.
+        if (!import.meta.env.VITE_SUPABASE_URL) {
+          const demoRoles: Record<string, UserRole> = {
+            'admin': 'admin',
+            'kitchen': 'kitchen',
+            'branch': 'branch_primary',
+            'branch incharge': 'branch_incharge_primary',
+            'branch-incharge': 'branch_incharge_primary',
+            'stock audit': 'stock_audit_primary',
+            'stock-audit': 'stock_audit_primary',
+          };
+          const key = username.trim().toLowerCase();
+          const role = demoRoles[key];
+          if (role && password === 'NewSurya') {
+            const expiresAt = new Date(Date.now() + SESSION_TIMEOUT_MS).toISOString();
+            const user: User = {
+              id: `demo-${key.replace(/\s+/g, '-')}`,
+              username: key,
+              password: '',
+              displayName: username.trim().replace(/\b\w/g, (c) => c.toUpperCase()),
+              role,
+            };
+            saveAppSession(`demo-session-${user.id}`, expiresAt);
+            set({ currentUser: user, sessionExpiresAt: expiresAt });
+            get()._resetSessionTimer();
+            _attachActivityListeners();
+            return true;
+          }
+          return false;
+        }
         const LOGIN_TIMEOUT_MS = 15000;
         const rpcPromise = supabase.rpc('login_staff_secure', {
           p_username: username,
