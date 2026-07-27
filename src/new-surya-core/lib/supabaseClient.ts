@@ -10,7 +10,9 @@ export const isSupabaseConfigured = Boolean(url && anonKey);
 // (signed with the project's JWT secret) and attach it as a plain Authorization header.
 // PostgREST verifies that JWT's signature directly, so Row Level Security still works,
 // without any auth.users / email requirement anywhere.
-let client: SupabaseClient | null = isSupabaseConfigured ? createClient(url as string, anonKey as string) : null;
+let client: SupabaseClient | null = isSupabaseConfigured ? createClient(url as string, anonKey as string, {
+  auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+}) : null;
 
 export function requireSupabase(): SupabaseClient {
   if (!client) throw new Error('Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.');
@@ -23,6 +25,9 @@ export function setAuthToken(token: string | null) {
   client = createClient(
     url,
     anonKey,
-    token ? { global: { headers: { Authorization: `Bearer ${token}` } } } : undefined
+    {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+      global: token ? { headers: { Authorization: `Bearer ${token}` } } : undefined,
+    },
   );
 }
