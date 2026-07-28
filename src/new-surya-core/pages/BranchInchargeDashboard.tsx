@@ -77,7 +77,7 @@ export default function BranchInchargeDashboard() {
       </div>
     </div>
 
-    <DashboardTabs tabs={tabs} active={tab} setActive={setTab} />
+    <DashboardTabs tabs={tabs.filter(t => appRole === 'branch_incharge_secondary' ? !(['Outlet Management','Primary Outlet Management'] as readonly string[]).includes(t) : appRole === 'branch_incharge_primary' ? !(['Secondary Outlet Management','Secondary Outlet Management Full'] as readonly string[]).includes(t) : true)} active={tab} setActive={setTab} />
 
     {tab === 'Today' && <div className="space-y-4">
       <section className="grid gap-4 rounded-lg bg-[#17202a] p-5 text-white shadow-lg shadow-slate-950/10 lg:grid-cols-[1.1fr_.9fr] lg:p-6">

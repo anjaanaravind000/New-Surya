@@ -42,7 +42,7 @@ export default function StockAuditDashboard() {
   const movementRows = state.ledger.filter(row => ['audit', 'return', 'waste', 'manual'].includes(row.sourceType));
   const countItems = itemType === 'ingredient' ? state.ingredients : state.products;
 
-  return <Shell title="Stock Audit" subtitle="Independent physical counting, inward checks, invoice matching, variance evidence and approval-ready history across all four branches.">
+  return <Shell title="Stock Audit" subtitle="Independent physical counting, inward checks, invoice matching, variance evidence and approval-ready history for your branch.">
     <div className="mb-4 grid gap-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm md:grid-cols-[minmax(240px,1fr)_auto] md:items-end">
       <Field label="Audit location">
         <select className={inputClass} value={state.selectedBranchId} onChange={event => dispatch({ type:'select-branch', branchId:event.target.value })}>
@@ -52,7 +52,9 @@ export default function StockAuditDashboard() {
       <div className="flex flex-wrap gap-2"><Pill tone="blue">Independent count</Pill><Pill tone="green">Evidence tracked</Pill><Pill tone="slate">Maker-checker approval</Pill></div>
     </div>
 
-    <DashboardTabs tabs={tabs} active={tab} setActive={setTab} />
+    {/* Same declutter as the branch dashboard: a primary stock-audit user doesn't need
+        the secondary variant of Ordering & Receiving in their tab strip, and vice versa. */}
+    <DashboardTabs tabs={tabs.filter(t => appRole === 'stock_audit_secondary' ? t !== 'Ordering & Receiving' : appRole === 'stock_audit_primary' ? t !== 'Extended Ordering & Receiving' : true)} active={tab} setActive={setTab} />
 
     {tab === 'Audit Desk' && <div className="space-y-4">
       <section className="grid gap-4 border border-slate-800 bg-[#111b25] p-5 text-white shadow-lg lg:grid-cols-[1.2fr_.8fr] lg:p-6">

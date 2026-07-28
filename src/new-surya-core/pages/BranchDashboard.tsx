@@ -37,7 +37,6 @@ import type { Bill, BranchPrice, PaymentMode, Product } from '../lib/types';
 import OperationalWorkbench from '../components/OperationalWorkbench';
 import { isExtensionTab, roleExtensionTabs } from '../lib/roleExtensions';
 import CompleteFeatureCenter from '../components/CompleteFeatureCenter';
-import QuickBilling from '../components/QuickBilling';
 import { BranchIntegratedFeature, type BranchIntegratedModule } from '../components/IntegratedFeatureModules';
 
 const existingTabs = ['Quick Billing', 'POS Billing', 'Order Taking', 'Complete Retail Billing', 'Complete Bill History', 'Cashier Daily Closure', 'Counter', 'Online Orders', 'Advance Orders', 'Credit', 'Goods Receipt', 'Stock', 'Returns', 'Daily Closure', 'Reports', 'Devices', 'Debug', 'Retail Billing & Counter', 'Stock-Aware Retail Operations', 'Wholesale & Credit', 'Primary Outlet Operations', 'Secondary Outlet Operations', 'Wholesale & Credit Operations', 'Complete Feature Centre'] as const;
@@ -213,9 +212,13 @@ export default function BranchBillingDashboard() {
     </div>}
 
     {dueDeliveries.length > 0 && <button onClick={() => setShowDeliveryAlert(true)} className="mb-4 flex w-full items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-left shadow-sm"><span className="flex items-center gap-3"><Bell className="size-5 text-amber-700" /><span><b className="block text-sm text-amber-950">{dueDeliveries.length} advance deliveries need attention</b><span className="text-xs text-amber-700">Open the delivery list and update preparation status.</span></span></span><span className="text-xs font-bold text-amber-800">Review</span></button>}
-    <DashboardTabs tabs={tabs} active={tab} setActive={setTab} />
+    {/* Single-branch launch: this outlet is retail-only, so hide tab buttons meant for
+        wholesale/secondary-outlet operating modes that don't apply here. The underlying
+        content still renders if reached directly (e.g. via URL suite param), this only
+        declutters the visible tab strip. */}
+    <DashboardTabs tabs={tabs.filter(t => !(['Wholesale & Credit', 'Wholesale & Credit Operations', 'Secondary Outlet Operations', 'Stock-Aware Retail Operations'] as readonly string[]).includes(t))} active={tab} setActive={setTab} />
 
-    {tab === 'Quick Billing' && <QuickBilling />}
+    {tab === 'Quick Billing' && <BranchIntegratedFeature module="Complete Retail Billing" />}
 
     {tab === 'POS Billing' && <div className="space-y-4">
       <section className="flex flex-col gap-4 border border-slate-800 bg-[#111b25] px-4 py-4 text-white shadow-lg shadow-slate-950/10 lg:flex-row lg:items-center lg:px-5">
