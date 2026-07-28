@@ -5,6 +5,8 @@ import type { AdvanceOrder, AppUser, AttendanceRecord, Bill, Branch, BranchPrice
 import * as seed from '../data/seed';
 import { allocateFinishedStock, billTotals, byId, canFulfillCart, nowIso, productionShortages, recipeCost, recipeRequirement, round2, today } from '../lib/calculations';
 
+type SyncQueueEntry = { id: string; at: string; table: string; action: string; payload: unknown; status: 'queued' | 'synced' | 'failed' };
+
 type State = {
   branches: Branch[];
   suppliers: Supplier[];
@@ -43,8 +45,6 @@ type State = {
   syncQueue: SyncQueueEntry[];
 };
 
-type SyncQueueEntry = { id: string; at: string; table: string; action: string; payload: unknown; status: 'queued' | 'synced' | 'failed' };
-
 type Action =
   | { type:'log'; event: Omit<DebugEvent, 'id' | 'at'> }
   | { type:'reset-demo' }
@@ -53,6 +53,8 @@ type Action =
   | { type:'toggle-user'; userId: string }
   | { type:'set-role-permission'; roleId: string; moduleKey: string; actions: string[] }
   | { type:'add-product'; product: Omit<Product, 'id' | 'barcode'> }
+  | { type:'add-recipe'; recipe: Omit<Recipe, 'id'> }
+  | { type:'add-credit-entry'; entry: Omit<CreditEntry, 'id' | 'at'> }
   | { type:'update-product'; productId: string; changes: Partial<Pick<Product, 'name' | 'category' | 'price' | 'unit' | 'taxRate'>> }
   | { type:'toggle-product'; productId: string }
   | { type:'upsert-branch-price'; branchPrice: BranchPrice }
@@ -72,7 +74,7 @@ type Action =
   | { type:'update-customer-credit-limit'; customerId: string; creditLimit: number; approvedBy: string }
   | { type:'add-supplier'; supplier: Omit<Supplier, 'id'> }
   | { type:'add-customer'; customer: Omit<Customer, 'id'> }
-  | { type:'add-promotion'; name: string; trigger: string; reward: string }
+  | { type:'add-promotion'; name: string; trigger: string; reward: string; branchIds: string[] }
   | { type:'toggle-promotion'; promotionId: string }
   | { type:'mark-print-job'; printJobId: string; status: PrintJob['status'] }
   | { type:'reprint-label'; stockId: string }
@@ -224,6 +226,16 @@ function reducer(state: State, action: Action): State {
         const roles = state.roles.map(r => r.id === action.roleId ? { ...r, permissions: { ...r.permissions, [action.moduleKey]: action.actions as any } } : r);
         return addLog(queueSync({ ...state, roles }, 'roles', 'update-permission', action), { level:'success', module:'Permissions', message:'Role permission updated', detail:`${action.moduleKey}: ${action.actions.join(', ')}` });
       }
+      case 'add-credit-entry': {
+        const entry: CreditEntry = { id: crypto.randomUUID(), at: nowIso(), ...action.entry };
+        const customerName = state.customers.find(c => c.id === entry.customerId)?.name ?? entry.customerId;
+        return addLog(queueSync({ ...state, creditEntries: [entry, ...state.creditEntries] }, 'creditEntries', 'insert', entry), { level:'success', module:'CRM/Credit', message:`Credit entry for ${customerName} recorded` });
+      }
+      case 'add-recipe': {
+        const recipe: Recipe = { id: crypto.randomUUID(), ...action.recipe };
+        const productName = state.products.find(p => p.id === recipe.productId)?.name ?? recipe.productId;
+        return addLog(queueSync({ ...state, recipes: [recipe, ...state.recipes] }, 'recipes', 'insert', recipe), { level:'success', module:'Recipe/BOM', message:`Recipe for ${productName} added` });
+      }
       case 'add-product': {
         const product: Product = { id: crypto.randomUUID(), barcode: `89${Date.now()}`, ...action.product };
         return addLog(queueSync({ ...state, products: [product, ...state.products] }, 'products', 'insert', product), { level:'success', module:'Item Master', message:`Product ${product.name} added` });
@@ -357,7 +369,7 @@ function reducer(state: State, action: Action): State {
         return addLog({ ...state, customers: [customer, ...state.customers] }, { level:'success', module:'CRM', message:`${customer.name} added to customer master` });
       }
       case 'add-promotion': {
-        const promotion: Promotion = { id: crypto.randomUUID(), name:action.name, trigger:action.trigger, reward:action.reward, active:true, createdAt:nowIso() };
+        const promotion: Promotion = { id: crypto.randomUUID(), name:action.name, trigger:action.trigger, reward:action.reward, active:true, createdAt:nowIso(), branchIds:action.branchIds };
         return addLog({ ...state, promotions: [promotion, ...state.promotions] }, { level:'success', module:'Promotions', message:`${promotion.name} saved` });
       }
       case 'toggle-promotion': {
