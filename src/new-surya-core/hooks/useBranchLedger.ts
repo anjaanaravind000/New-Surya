@@ -34,6 +34,7 @@ export type LedgerSavedClosure = {
   refunds: number | string;
   expenses: number | string;
   purchase_payments?: number | string;
+  bank_deposits?: number | string;
   discounts: number | string;
   bill_count: number | string;
   duplicate_prints: number | string;
@@ -128,7 +129,7 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
       const branchList = branches && branches.length > 0 ? branches : null;
 
       let closureQuery = supabase.from('branch_daily_closure_ledger').select('branch, closure_date, bill_count, sales_total, credit_billed, discounts, tax_total, cash_total, upi_total, card_total, credit_collected, advance_collected, advance_balance_collected').gte('closure_date', fromDate).lte('closure_date', toDate);
-      let savedClosureQuery = supabase.from('branch_daily_closures').select('id, branch, closure_date, cashier, opening_cash, cash_total, upi_total, card_total, credit_billed, credit_collected, advance_collected, advance_balance_collected, refunds, expenses, purchase_payments, discounts, bill_count, duplicate_prints, expected_cash, actual_cash, difference, notes, created_at').gte('closure_date', fromDate).lte('closure_date', toDate).order('closure_date', { ascending: false });
+      let savedClosureQuery = supabase.from('branch_daily_closures').select('id, branch, closure_date, cashier, opening_cash, cash_total, upi_total, card_total, credit_billed, credit_collected, advance_collected, advance_balance_collected, refunds, expenses, purchase_payments, bank_deposits, discounts, bill_count, duplicate_prints, expected_cash, actual_cash, difference, notes, created_at').gte('closure_date', fromDate).lte('closure_date', toDate).order('closure_date', { ascending: false });
       let operationsQuery = supabase.from('branch_operation_records').select('id, branch, record_type, record_id, record_no, amount, status, actor, payload, created_at, updated_at').gte('created_at', from).lte('created_at', to).order('created_at', { ascending: false }).limit(5000);
       let billsQuery = supabase.from('branch_bill_headers').select('id, branch, bill_no, invoice_no, bill_type, salesperson, biller, total, tendered, balance, discount, tax, created_at').gte('created_at', from).lte('created_at', to).order('created_at', { ascending: false }).limit(5000);
 
