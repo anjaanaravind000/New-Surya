@@ -564,8 +564,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         const advanceOrders = { ...s.advanceOrders };
         const creditSales   = { ...s.creditSales };
 
-        const latestStockRows = new Map<string, (typeof stockData extends (infer R)[] | null ? R : never)>();
-        for (const row of stockData || []) {
+        type StockRow = { item_barcode?: number | string | null; item_name?: string | null; quantity?: number | null; reserved_quantity?: number | null; updated_at?: string | null; last_updated_at?: string | null; unit?: string | null; min_threshold?: number | null };
+        const latestStockRows = new Map<string, StockRow>();
+        for (const row of (stockData || []) as StockRow[]) {
           const key = row.item_barcode != null
             ? `barcode:${Number(row.item_barcode)}`
             : `name:${normalizeStockName(String(row.item_name || ''))}`;

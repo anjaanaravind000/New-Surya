@@ -8,6 +8,7 @@ export type CakeTypePrice = {
   perKg: number;
   halfKg?: number;
   flavours: string[];
+  catalogBarcode?: number;
 };
 
 export const CAKE_TYPE_PRICES: CakeTypePrice[] = [
