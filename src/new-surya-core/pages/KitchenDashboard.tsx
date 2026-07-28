@@ -16,6 +16,14 @@ const existingTabs = ['Kitchen Cockpit', 'Live Kitchen Operations', 'Bake Planne
 const tabs = [...existingTabs, ...roleExtensionTabs.kitchen] as const;
 type Tab = typeof tabs[number];
 
+// Tabs that are just deep-links into a module's own internal tab strip
+// (e.g. "Material Orders" opens Materials & Procurement pre-set to its
+// "orders" internal tab). Showing them again at the top level duplicated
+// the same screens, so they're kept working for routing but hidden from
+// the visible nav in favour of the parent module's own tab switcher.
+const duplicateNavTabs = new Set<Tab>(['Production Operations', 'Material Orders', 'Material Inventory', 'Suppliers', 'Purchase Invoices', 'Materials Analytics', 'Custom Plan', 'Materials Closure', 'Recipe Management', 'Production Queue', 'Production History', 'Packing Queue', 'Cake Orders', 'Corrections', 'Transfer In', 'Packing Billing', 'Leftover Items', 'Dispatched History', 'Packing Closure']);
+const navTabs = tabs.filter(t => !duplicateNavTabs.has(t));
+
 const stages: ProductionStatus[] = ['prep','mixing','proofing','baking','cooling','qc','packing','completed'];
 
 export default function KitchenDashboard() {
@@ -34,7 +42,7 @@ export default function KitchenDashboard() {
   const cost = recipe ? recipeCost(recipe, state.ingredients, qty) : undefined;
 
   return <Shell title="Central Kitchen" subtitle="Plan production, control raw materials, move batches through quality checks, and dispatch to every branch.">
-    <DashboardTabs tabs={tabs} active={tab} setActive={setTab} />
+    <DashboardTabs tabs={navTabs} active={tab} setActive={setTab} />
     {tab === 'Kitchen Cockpit' && <div className="space-y-5">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5"><Metric icon={ChefHat} label="Running batches" value={String(metrics.runningProduction.length)} helper="Active production batches across stages." tone="orange" /><Metric icon={ClipboardCheck} label="Admin approval" value={String(metrics.pendingProduction.length)} helper="Waiting before raw deduction." tone="amber" /><Metric icon={AlertTriangle} label="Low raw stock" value={String(metrics.lowIngredients.length)} helper="Kitchen purchase risk." tone="red" /><Metric icon={Scale} label="Expiry risk" value={String(metrics.expiringFinished.length)} helper="Finished batches expiring soon." tone="purple" /><Metric icon={Route} label="Dispatches" value={String(state.dispatches.length)} helper="Crate and route tracking." tone="blue" /></div>
       <Card title="Today’s production pipeline"><div className="grid gap-3 lg:grid-cols-3">{state.productionPlans.map(plan => <div key={plan.id} className="rounded-2xl bg-white/70 p-4 ring-1 ring-white/70"><div className="flex flex-wrap items-center gap-2"><Pill tone={plan.status === 'pending-admin-approval' ? 'amber' : plan.status === 'completed' ? 'green':'blue'}>{plan.status}</Pill><b>{products[plan.productId]?.name}</b></div><p className="mt-2 text-sm text-slate-600">{plan.requestedQty} {products[plan.productId]?.unit} · {plan.notes}</p><p className="text-xs text-slate-500">Demand: {Object.entries(plan.branchDemand).map(([id, q]) => `${branches[id]?.name}: ${q}`).join(' | ')}</p></div>)}</div></Card>
