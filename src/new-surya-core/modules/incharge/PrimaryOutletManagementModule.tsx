@@ -393,10 +393,10 @@ function Panel({
   );
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <label className="space-y-1 text-xs font-black uppercase tracking-wide text-slate-500">
-      <span>{label}</span>
+      <span>{label}</span>{hint && <span className="ml-1 normal-case font-semibold text-slate-400">({hint})</span>}
       {children}
     </label>
   );
