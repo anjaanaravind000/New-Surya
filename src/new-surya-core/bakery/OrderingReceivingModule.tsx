@@ -1199,7 +1199,7 @@ function PlacedOrdersPanel({
                 </div>
                 <div className="mt-3 grid grid-cols-5 gap-1" aria-label={`Live order status: ${orderLocationLabel(order.status)}`}>
                   {(["pending", "processing", "baking", "packed", "dispatched"] as const).map((stage, index, stages) => {
-                    const currentIndex = stages.indexOf(order.status);
+                    const currentIndex = (stages as readonly string[]).indexOf(order.status);
                     const complete = index <= currentIndex;
                     return (
                       <div key={stage} className="min-w-0">
