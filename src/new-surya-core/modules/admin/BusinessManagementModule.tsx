@@ -148,8 +148,8 @@ function Badge({ children, tone = 'slate' }: { children: ReactNode; tone?: 'slat
   return <span className={cn('inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wide', tones[tone])}>{children}</span>;
 }
 
-function BranchPill({ branch }: { branch: Branch }) {
-  return <span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-black uppercase', BRANCH_COLORS[branch]?.badge)}>{BRANCH_LABELS[branch] ?? branch}</span>;
+function BranchPill({ branch }: { branch: Branch | string }) {
+  return <span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-black uppercase', BRANCH_COLORS[branch as Branch]?.badge)}>{BRANCH_LABELS[branch as Branch] ?? branch}</span>;
 }
 
 function EmptyState({ label }: { label: string }) {
