@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { PersistStorage, StorageValue } from "zustand/middleware";
 import { supabase } from "@/lib/supabase";
+import { money } from "@/lib/calculations";
 import type { Branch } from "./types";
 
 type PayMode = "cash" | "upi" | "card" | "split" | "bank" | "credit";
@@ -3044,6 +3045,7 @@ export async function nextBranchInvoiceAtomic(branch: Branch) {
   return nextBranchInvoice(branch);
 }
 
-export function money(value: number) {
-  return `₹${value.toLocaleString("en-IN", { maximumFractionDigits: 2, minimumFractionDigits: 0 })}`;
-}
+// money() is now imported from '@/lib/calculations' above (whole-rupee rounding,
+// consistent with the rest of the app) and re-exported here so existing
+// `import { money } from '../branchOpsStore'` call sites keep working unchanged.
+export { money };
