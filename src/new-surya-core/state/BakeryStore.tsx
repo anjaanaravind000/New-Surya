@@ -40,8 +40,10 @@ type State = {
   selectedPaymentMode: PaymentMode;
   orderChannel: Bill['orderChannel'];
   cashReceived: number;
-  syncQueue: { id: string; at: string; table: string; action: string; payload: unknown; status: 'queued' | 'synced' | 'failed' }[];
+  syncQueue: SyncQueueEntry[];
 };
+
+type SyncQueueEntry = { id: string; at: string; table: string; action: string; payload: unknown; status: 'queued' | 'synced' | 'failed' };
 
 type Action =
   | { type:'log'; event: Omit<DebugEvent, 'id' | 'at'> }
@@ -181,7 +183,8 @@ function addLog(state: State, event: Omit<DebugEvent, 'id' | 'at'>): State {
 }
 
 function queueSync(state: State, table: string, action: string, payload: unknown): State {
-  return { ...state, syncQueue: [{ id: crypto.randomUUID(), at: nowIso(), table, action, payload, status: 'queued' }, ...state.syncQueue].slice(0, 200) };
+  const entry: SyncQueueEntry = { id: crypto.randomUUID(), at: nowIso(), table, action, payload, status: 'queued' };
+  return { ...state, syncQueue: [entry, ...state.syncQueue].slice(0, 200) };
 }
 
 function createLedger(entry: Omit<InventoryLedgerEntry, 'id' | 'at'>): InventoryLedgerEntry {
