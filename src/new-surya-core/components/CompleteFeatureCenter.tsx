@@ -284,6 +284,9 @@ export default function CompleteFeatureCenter({ dashboard, initialModule }: { da
   useEffect(() => { if (selected) safeSave(auditKey(selected), audit); }, [audit, selected]);
   useEffect(() => { if (selected && formOpen && !editing) safeSave(draftKey(selected), form); }, [editing, form, formOpen, selected]);
 
+  const [sidebarSlot, setSidebarSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => { setSidebarSlot(document.getElementById('sidebar-modules-slot')); }, []);
+
   if (!selected) return null;
 
   const addAudit = (recordId: string, action: string, detail: string) => setAudit(current => [{ id: uid(), recordId, action, detail, at: new Date().toISOString() }, ...current].slice(0, 500));
@@ -411,8 +414,6 @@ export default function CompleteFeatureCenter({ dashboard, initialModule }: { da
     } catch (error) { setBusy(false); setNotice(error instanceof Error ? `Import failed: ${error.message}` : 'Import failed.'); }
   };
 
-  const [sidebarSlot, setSidebarSlot] = useState<HTMLElement | null>(null);
-  useEffect(() => { setSidebarSlot(document.getElementById('sidebar-modules-slot')); }, []);
   const moduleListNav = <div className="space-y-4 p-1">{Object.entries(groups).map(([group, names]) => <div key={group}><p className="px-2 text-[10px] font-black uppercase tracking-[.16em] text-slate-500 dark:text-white/40">{group}</p><div className="mt-1 space-y-1">{names.map(name => { const module = modules.find(item => item.name === name); if (!module) return null; const active = module.id === selected.id; return <button key={module.id} aria-current={active ? 'page' : undefined} onClick={() => setSelectedId(module.id)} className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-xs font-bold transition ${active ? 'bg-gradient-to-r from-amber-500 to-orange-600 text-white shadow-md shadow-orange-950/20' : 'text-slate-300 hover:bg-white/[0.07] hover:text-white'}`}><span className="truncate">{module.name}</span><ChevronRight className="size-3.5 shrink-0" /></button>; })}</div></div>)}</div>;
 
   return <div className={sidebarSlot ? "grid gap-5" : "grid gap-5 xl:grid-cols-[280px_minmax(0,1fr)]"}>

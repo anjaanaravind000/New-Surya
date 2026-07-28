@@ -215,7 +215,7 @@ function categorize(tab: string): string {
   return 'System';
 }
 
-export function DashboardTabs<T extends string>({ tabs, active, setActive }: { tabs: readonly T[]; active: T; setActive: (tab: T) => void }) {
+export function DashboardTabs<T extends string>({ tabs, active, setActive }: { tabs: readonly T[]; active: T; setActive: React.Dispatch<React.SetStateAction<T>> }) {
   const stripRef = React.useRef<HTMLDivElement>(null);
   const [sidebarSlot, setSidebarSlot] = React.useState<HTMLElement | null>(null);
   const [moduleQuery, setModuleQuery] = React.useState('');
