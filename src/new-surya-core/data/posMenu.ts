@@ -1464,7 +1464,8 @@ const channelPrices = [
   { productId: "pos-dhal-holige-2pcs-piece", posPrice: 65, onlinePrice: 65 }
 ];
 
-const retailBranchIds = ['marathahalli', 'sarjapur-road', 'kadubeesanahalli', 'koramangala'];
+// Single-branch launch: only Marathahalli gets seeded pricing. Admin can add more branches later.
+const retailBranchIds = ['marathahalli'];
 
 export const posMenuBranchPrices: BranchPrice[] = retailBranchIds.flatMap(branchId => channelPrices.map(({ productId, posPrice, onlinePrice }) => ({
   id: `bp-${branchId}-${productId}`,
