@@ -380,7 +380,7 @@ const navByRole: Record<string, { to: string; label: string; icon: LucideIcon; h
   'stock-audit': { to: '/stock-audit', label: 'Stock Audit', icon: ClipboardCheck, hint: 'Count, verify and reconcile', name: 'Stock Auditor', initials: 'SA' }
 };
 
-export function Shell({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
+export function Shell({ title, subtitle, children, hideHeader = false }: { title: string; subtitle: string; children: React.ReactNode; hideHeader?: boolean }) {
   const [mobileMenu, setMobileMenu] = React.useState(false);
   const reduceMotion = useReducedMotion();
   const navigate = useNavigate();
@@ -476,14 +476,14 @@ export function Shell({ title, subtitle, children }: { title: string; subtitle: 
       </header>
 
       <motion.main data-testid="app-main" initial={reduceMotion ? false : { opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .35, ease: [0.22, 1, 0.36, 1] }} className="relative z-10 mx-auto w-full max-w-[1780px] px-3 pb-14 pt-7 sm:px-5 lg:px-8">
-        <div className="mb-7 flex flex-col gap-2 border-b border-[hsl(var(--pn-gold))]/12 pb-6 sm:flex-row sm:items-end sm:justify-between">
+        {!hideHeader && <div className="mb-7 flex flex-col gap-2 border-b border-[hsl(var(--pn-gold))]/12 pb-6 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[.24em] text-[hsl(var(--pn-gold))]">{activeNav.label} workspace</p>
             <h2 className="font-display bg-gradient-to-r from-[hsl(var(--pn-cream))] via-[hsl(var(--pn-gold))] to-[hsl(var(--pn-rose))] bg-clip-text text-3xl font-black leading-tight tracking-tight text-transparent sm:text-4xl">{title}</h2>
             <p className="mt-1.5 max-w-4xl text-sm leading-6 text-[hsl(var(--pn-cream-mute))]">{subtitle}</p>
           </div>
           <div className="pn-live"><span className="pn-live-dot" />Live operational data</div>
-        </div>
+        </div>}
         {children}
       </motion.main>
     </div>
